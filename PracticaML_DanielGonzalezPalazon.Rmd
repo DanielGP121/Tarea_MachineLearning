@@ -1,0 +1,446 @@
+---
+title: "Práctica Final Machine Learning 2024/2025"
+subtitle: "Master en Bioinformática, Universidad de Murcia"
+author: "Daniel González Palazón (daniel.gonzalezp@um.es)"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  html_document:
+    df_print: paged
+    highlight: kate
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+# --- Configuración Global del Documento ---
+# Establece las opciones por defecto para todos los chunks de código R.
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+knitr::opts_knit$set(root.dir = "C:/Users/there/Desktop/Tarea Machine Learning/Tarea 1")
+```
+
+**Carga de Librerías y Datos**
+
+En este primer bloque, se establecen las bases para el análisis. Se define una semilla para garantizar la reproducibilidad de los resultados, se cargan las librerías esenciales que se usarán a lo largo del informe y se leen los datos desde el fichero RDS proporcionado.
+
+```{r initial_setup}
+# --- Reproducibilidad y Entorno ---
+
+# Se fija una semilla para los generadores de números aleatorios. Esto asegura que
+# cualquier proceso que involucre aleatoriedad (como la división de datos o el
+# entrenamiento de ciertos modelos) produzca exactamente los mismos resultados
+# cada vez que se ejecute el código.
+set.seed(123)
+
+# --- Carga de Librerías ---
+# Se cargan todas las librerías necesarias para el análisis. Agruparlas aquí
+# facilita la gestión de dependencias del proyecto.
+library(ggplot2)      # Para la creación de visualizaciones estáticas y personalizadas.
+library(plotly)       # Para convertir gráficos de ggplot2 en interactivos.
+library(VIM)          # Utilizada para la imputación de valores nulos mediante el algoritmo k-NN.
+library(tibble)
+library(corrplot)     # Herramienta para la visualización de matrices de correlación.
+library(RColorBrewer)
+library(Hmisc)        # Proporciona la función rcorr para calcular p-valores de correlación.
+library(caret)        # Framework principal para el modelado de Machine Learning en R.
+library(dplyr)        # Esencial para la manipulación y transformación de datos (data wrangling).
+library(factoextra)   # Facilita la extracción y visualización de resultados de PCA.
+library(doParallel)   # Permite la ejecución en paralelo para acelerar el entrenamiento de modelos.
+library(nnet)         # Necesaria para la función multinom(), usada en regresión logística multinomial.
+library(tidyr)
+
+
+
+# --- Carga de Datos ---
+
+# Se define la ruta del fichero de datos en una variable para facilitar su modificación.
+data_path <- "PracticaMLDataset2425.rds"
+
+# Se cargan los datos utilizando readRDS(). Se envuelve la llamada en un bloque tryCatch
+# para gestionar de forma elegante un posible error si el fichero no se encuentra,
+# proporcionando un mensaje claro al usuario.
+tryCatch({
+  full_data <- readRDS(data_path)
+  cat("Dataset cargado correctamente.\n")
+  cat("Dimensiones del dataset: ", nrow(full_data), "filas y", ncol(full_data), "columnas.\n")
+}, error = function(e) {
+  cat("Error al cargar el fichero: ", e$message, "\n")
+  cat("Por favor, asegúrate de que el fichero 'PracticaMLDataset2425.rds' se encuentra en el directorio de trabajo.\n")
+})
+
+setwd("C:/Users/there/Desktop/Tarea Machine Learning/Tarea 1")
+current_wd <- getwd()
+cat("-> El directorio de trabajo actual es:\n", current_wd, "\n\n")
+```
+
+# PREGUNTA 1: Análisis Descriptivo de los Datos
+
+En esta sección se realiza una exploración inicial y exhaustiva del conjunto de datos para comprender sus características fundamentales. Este análisis es un paso previo indispensable antes de proceder con el modelado.
+
+## ¿Nos enfrentamos a un problema balanceado o no balanceado?
+
+Para determinar si el problema de clasificación está balanceado, es crucial analizar la distribución de la variable objetivo `class`. Un desbalance severo, donde una o más clases tienen un número de muestras desproporcionadamente mayor que otras, puede sesgar el entrenamiento de los modelos de machine learning.
+
+```{r class_balance_analysis}
+# Se comprueba que la columna 'class' existe para evitar errores.
+if("class" %in% names(full_data)) {
+  
+  # Se utiliza dplyr para calcular la frecuencia y el porcentaje de cada clase.
+  class_distribution <- full_data %>%
+    filter(!is.na(class)) %>% # Se excluyen los NAs de la variable de clase para el cálculo
+    group_by(class) %>%
+    summarise(Frecuencia = n(), .groups = 'drop') %>%
+    mutate(Porcentaje = round(Frecuencia / sum(Frecuencia) * 100, 2)) %>%
+    arrange(desc(Frecuencia))
+  
+  # Se muestra la tabla de distribución usando knitr::kable para un formato limpio.
+  knitr::kable(class_distribution, caption = "Distribución de la variable de clase")
+
+  # Se crea un gráfico de barras para visualizar la distribución.
+  plot_balance <- ggplot(class_distribution, 
+                         aes(x = reorder(class, -Frecuencia), 
+                             y = Frecuencia, 
+                             fill = class, 
+                             text = paste("Clase:", class, "<br>Frecuencia:", Frecuencia, "<br>Porcentaje:", Porcentaje, "%"))) +
+    geom_bar(stat = "identity", show.legend = FALSE) +
+    labs(
+      title = "Distribución de las Clases en el Dataset",
+      x = "Tipo de Región Genómica",
+      y = "Frecuencia (escala log10)"
+    ) +
+    # Se usa una escala logarítmica en el eje Y para que las clases minoritarias
+    # sean visibles y no queden aplastadas por la clase mayoritaria.
+    scale_y_log10(breaks = c(1000, 10000, 100000), labels = scales::comma) + 
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Se convierte el gráfico a plotly para añadir interactividad.
+  ggplotly(plot_balance, tooltip = "text")
+  
+} else {
+  cat("La columna 'class' no se encuentra en el dataset.\n")
+}
+```
+
+El análisis revela un **fuerte desbalance** en el dataset. La clase `ICE` (internal coding exons) es abrumadoramente mayoritaria, representando más del 72% de las observaciones. En contraste, clases como `pseudoGene` (1.2%), `lncRNA` (2.1%) y `ncRNA` (2.1%) son extremadamente minoritarias.
+
+**Implicaciones y Decisiones de Implementación:**
+
+1.  **Sesgo del Modelo:** Con datos desbalanceados, un modelo puede alcanzar una alta precisión (accuracy) simplemente clasificando la mayoría de las muestras como la clase dominante (`ICE`), ignorando por completo a las clases minoritarias. Esto lo convertiría en un modelo inútil en la práctica.
+
+2.  **Métricas de Evaluación:** La `Accuracy` no será una métrica fiable para evaluar el rendimiento. Un modelo con un 72% de accuracy podría ser peor que el azar. Por lo tanto, se priorizarán métricas que son robustas frente al desbalance de clases, como:
+    * **Índice Kappa de Cohen:** Mide el acuerdo entre la clasificación del modelo y la realidad, corrigiendo el acierto que podría ocurrir por casualidad. Un Kappa > 0.6 indica un buen modelo.
+    * **F1-Score por clase:** Es la media armónica de Precisión y Recall, y proporciona una medida equilibrada del rendimiento para cada clase individualmente.
+    * **AUC ROC promediado:** Para problemas multiclase, se puede calcular el área bajo la curva ROC para cada clase (uno-vs-resto) y promediarla.
+
+3.  **Estrategias de Mitigación en `caret`:** Durante el entrenamiento, se implementarán técnicas para manejar el desbalance. La estrategia elegida será el **downsampling**, que se integrará directamente en el proceso de validación cruzada a través del parámetro `sampling = "down"` en `trainControl`.
+    * **¿Por qué Downsampling?** Dado el gran tamaño del dataset (>170,000 filas), reducir el tamaño de la clase mayoritaria es computacionalmente más eficiente que aumentar las minoritarias (upsampling), lo cual podría crear un dataset masivo y ralentizar enormemente el entrenamiento.
+    * **¿Por qué dentro de `trainControl`?** Aplicar el remuestreo dentro de cada pliegue de la validación cruzada es crucial para evitar el "data leakage". Se asegura que el modelo se entrena en datos balanceados en cada iteración, pero se valida en la distribución original del pliegue de test, proporcionando una estimación de rendimiento más realista.
+
+## ¿Hay valores nulos? Si los hay, ¿cómo debemos tratarlos?
+
+La presencia de valores nulos (NA) puede impedir el entrenamiento de muchos modelos de machine learning. Es necesario identificarlos y aplicar una estrategia de tratamiento adecuada.
+
+```{r null_value_analysis}
+# Se calcula el número de NAs y su porcentaje para cada columna.
+na_counts <- sapply(full_data, function(x) sum(is.na(x)))
+na_summary <- data.frame(
+  Variable = names(na_counts),
+  Num_NA = na_counts,
+  Percentage_NA = round(100 * na_counts / nrow(full_data), 2)
+)
+
+# Se filtra para mostrar solo las columnas que contienen valores nulos.
+na_summary_filtered <- na_summary %>% filter(Num_NA > 0)
+
+# Se presenta el resultado en una tabla bien formateada.
+knitr::kable(na_summary_filtered, caption = "Resumen de Valores Nulos por Variable")
+```
+
+**Estrategia de tratamiento de valores nulos y justificación:**
+
+El análisis muestra que solo dos columnas contienen valores nulos: `zdna` y `class`. Se adopta una estrategia de dos pasos:
+
+1.  **Variable `class`:** Es la variable objetivo. Las filas con valores nulos en esta columna no son útiles para el entrenamiento supervisado. Dado que representan un porcentaje muy bajo del total de datos (`r na_summary_filtered$Percentage_NA[na_summary_filtered$Variable == 'class']`%), la estrategia más segura es **eliminar estas filas**. Esto evita introducir ruido y no supone una pérdida de información significativa.
+
+2.  **Variable `zdna`:** Este es un predictor numérico. Descartar estas filas podría eliminar información valiosa de otras 40 variables en esas mismas filas. Por ello, la imputación es preferible.
+    * **Decisión de Implementación:** En lugar de una imputación simple (como la media o mediana, que ignoran las relaciones entre variables), se opta por un método más sofisticado: **imputación por k-Vecinos más Cercanos (k-NN)**, implementado a través de la librería `VIM`.
+    * **Justificación:** El algoritmo k-NN identifica las `k` muestras más similares (vecinos) a la muestra con el valor nulo, basándose en la distancia euclidiana calculada sobre el resto de variables. Luego, imputa el valor faltante de `zdna` usando la media (o mediana) de `zdna` de esos vecinos. Este enfoque es superior porque preserva la estructura local de los datos, siendo especialmente útil si las variables están correlacionadas. Se ha elegido `k=5`, un valor estándar que ofrece un buen equilibrio entre robustez y sensibilidad al ruido local.
+
+```{r null_value_imputation}
+# --- Paso 1: Eliminar filas con NA en la variable 'class' ---
+data_cleaned <- full_data[!is.na(full_data$class), ]
+cat(nrow(full_data) - nrow(data_cleaned), "filas eliminadas por tener NA en la columna 'class'.\n")
+
+# --- Paso 2: Imputar valores NA en 'zdna' usando k-NN ---
+if(any(is.na(data_cleaned$zdna))) {
+  # La función kNN de la librería VIM imputa los valores faltantes.
+  # - data_cleaned: El dataframe a imputar.
+  # - variable: El nombre de la columna a imputar.
+  # - k: El número de vecinos a considerar.
+  # - imp_var = FALSE: Evita que se añada una columna extra indicando qué valores fueron imputados.
+  data_imputed <- kNN(data_cleaned, variable = "zdna", k = 5, imp_var = FALSE)
+  
+  cat("Valores nulos en 'zdna' imputados correctamente usando k-NN (k=5).\n")
+} else {
+  data_imputed <- data_cleaned
+  cat("La columna 'zdna' no tiene valores nulos tras la limpieza inicial.\n")
+}
+
+# --- Verificación Final ---
+# Se comprueba que el dataset resultante está completamente libre de NAs.
+total_na_final <- sum(sapply(data_imputed, function(x) sum(is.na(x))))
+cat("Número total de valores nulos en el dataset final:", total_na_final, "\n")
+```
+
+**Resultado de la limpieza:**
+
+El proceso ha resultado en un dataset completo y limpio, `data_imputed`, que será la base para los análisis posteriores.
+
+## Visualizar e identificar posibles correlaciones entre los predictores
+
+El análisis de correlación es fundamental para entender la estructura interna de los datos y las relaciones entre las variables predictoras. Una alta correlación (multicolinealidad) puede indicar redundancia y afectar la interpretabilidad de algunos modelos.
+
+### Visualización Global de la Matriz de Correlación
+
+Primero, generamos una visualización global de la matriz de correlación para obtener una primera impresión de las relaciones.
+
+```{r correlation_analysis}
+# Se seleccionan solo las variables numéricas para el análisis.
+numeric_predictors <- data_imputed %>% 
+  select(where(is.numeric))
+
+# Se calcula la matriz de correlación de Pearson.
+correlation_matrix <- cor(numeric_predictors, method = "pearson", use = "pairwise.complete.obs")
+
+# Se genera el corrplot para visualizar la matriz.
+corrplot(correlation_matrix, 
+         method = "circle", 
+         type = "lower",
+         order = "hclust", # Se ordenan las variables por clusters para agrupar las correlacionadas.
+         tl.col = "black", 
+         tl.srt = 45, 
+         tl.cex = 0.6,
+         col = colorRampPalette(brewer.pal(11, "RdYlBu"))(200),
+         main = "Matriz de Correlación de Predictores Numéricos",
+         mar = c(0,0,1,0))
+```
+
+**Interpretación de la Matriz de Correlación:**
+
+La matriz de correlación generada nos ofrece una visión general y rápida de las interrelaciones entre las variables predictoras del dataset. En esta visualización:
+
+* **Los círculos azules** representan una **correlación positiva**, lo que significa que cuando el valor de una variable aumenta, el de la otra también tiende a hacerlo. Cuanto más grande y oscuro es el círculo, más fuerte es esta relación.
+* **Los círculos rojos** representan una **correlación negativa**, indicando que cuando una variable aumenta, la otra tiende a disminuir. De nuevo, el tamaño y la intensidad del color reflejan la fuerza de esta relación inversa.
+* **Los círculos pálidos o pequeños (cercanos al blanco)** sugieren una **correlación débil o inexistente** entre las variables.
+
+**Observaciones Clave:**
+
+1.  **Bloques de Correlación Fuerte:** Se pueden identificar claramente grandes bloques de variables que están altamente correlacionadas entre sí. Por ejemplo, se observa un bloque con intensos colores azules en la parte superior, que agrupa variables como `cpgislands`, `bendingstiffness` y `dnadenaturation`, y un bloque con colores rojos en la parte inferior izquierda, que incluye variables como `aphilicity`, `basestacking` y `duplexstabilityfreeenergy`. Esto indica que hay grupos de variables que se comportan de manera muy similar.
+2.  **Relaciones Mixtas:** Algunas variables, como `meanPd` o `RepeatsOverlap`, muestran correlaciones más débiles y mixtas con el resto de los predictores, lo que sugiere que podrían aportar información más independiente.
+3.  **Redundancia de Información:** La presencia de estos bloques tan marcados es un fuerte indicio de **multicolinealidad**. Esto significa que muchas variables están midiendo conceptos biológicos o estructurales muy similares y, por lo tanto, podrían ser redundantes.
+
+
+### Análisis Cuantitativo de las Correlaciones más Fuertes
+
+Para profundizar, identificamos y tabulamos las parejas de variables con las correlaciones más extremas.
+
+```{r top_correlations}
+# Se crea una función para aplanar la matriz de correlación y ordenarla.
+flatten_corr_matrix <- function(cormat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    var1 = rownames(cormat)[row(cormat)[ut]],
+    var2 = rownames(cormat)[col(cormat)[ut]],
+    cor  = cormat[ut]
+  )
+}
+
+# Se obtienen y ordenan las correlaciones.
+flat_cor <- flatten_corr_matrix(correlation_matrix)
+
+# Se muestran las 10 correlaciones positivas más altas.
+top_positive_cor <- flat_cor %>% arrange(desc(cor))
+knitr::kable(head(top_positive_cor, 10), caption = "Top 10 Correlaciones Positivas Más Fuertes", digits = 3)
+
+# Se muestran las 10 correlaciones negativas más altas (más cercanas a -1).
+top_negative_cor <- flat_cor %>% arrange(cor)
+knitr::kable(head(top_negative_cor, 10), caption = "Top 10 Correlaciones Negativas Más Fuertes", digits = 3)
+
+# Visualización de un par de ejemplos
+p1 <- ggplot(numeric_predictors, aes(x = dnadenaturation, y = duplexstabilityfreeenergy)) +
+  geom_point(alpha = 0.1, color = "#BB4444") +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  labs(title = "Ejemplo Correlación Negativa Fuerte", 
+       subtitle = paste("Cor =", round(cor(numeric_predictors$dnadenaturation, numeric_predictors$duplexstabilityfreeenergy), 2))) +
+  theme_minimal()
+
+p2 <- ggplot(numeric_predictors, aes(x = duplexstabilityfreeenergy, y = zdna)) +
+  geom_point(alpha = 0.1, color = "#4477AA") +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  labs(title = "Ejemplo Correlación Positiva Fuerte",
+       subtitle = paste("Cor =", round(cor(numeric_predictors$duplexstabilityfreeenergy, numeric_predictors$zdna), 2))) +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+```
+
+### Conclusión y Estrategia de Implementación
+
+**Hallazgos:**
+
+El análisis confirma la presencia de una **fuerte y significativa multicolinealidad** en el conjunto de datos. Muchas variables predictoras están altamente correlacionadas, tanto positiva como negativamente, indicando que comparten una gran cantidad de información y son, en cierto modo, redundantes.
+
+**Implicaciones para el Modelado:**
+
+* **Modelos Sensibles (e.g., Regresión Lineal/Logística):** Para estos modelos, la multicolinealidad es un problema serio. Infla la varianza de los coeficientes, haciendo que las estimaciones sean inestables y la interpretación de la importancia de cada variable, poco fiable. Si se usaran estos modelos, sería **imprescindible** reducir la dimensionalidad o eliminar variables correlacionadas.
+* **Modelos Robustos (e.g., Random Forest):** Los modelos basados en árboles de decisión, y en particular los ensambles como Random Forest, son **mucho más robustos** frente a la multicolinealidad. El mecanismo de selección de un subconjunto aleatorio de variables en cada nodo (`mtry`) mitiga el problema, ya que las variables correlacionadas rara vez compiten directamente en la misma división del árbol.
+
+**Decisión de Implementación:**
+
+Dado que los algoritmos requeridos para esta práctica son **Random Forest y SVM**, se tomará la siguiente decisión estratégica:
+
+1.  **No se eliminarán variables predictoras basándose en la correlación en esta fase de preprocesamiento.**
+2.  **Justificación:** Se prefiere dejar que los propios algoritmos de machine learning gestionen la redundancia. Random Forest lo hace de forma inherente. Para el SVM, aunque puede ser sensible, técnicas como la regularización (parámetro `C`) ayudan a manejar la complejidad del modelo. Eliminar variables a priori podría resultar en una pérdida de información sutil pero valiosa que el modelo podría aprovechar.
+3.  **Análisis Posterior:** La importancia de las variables devuelta por el modelo Random Forest (`varImp`) se utilizará más adelante como una forma más sofisticada e informada por el problema de clasificación para entender qué variables son realmente relevantes, en lugar de basarse únicamente en correlaciones bivariadas.
+
+Este enfoque es metodológicamente sólido, ya que evita la eliminación prematura de características y confía en la capacidad de los modelos modernos para manejar datos complejos.
+
+## ¿Hay alguna asociación entre los predictores y los tipos de región?
+
+Para abordar esta pregunta se utilizará un modelo de **Regresión Logística Multinomial**. Este enfoque es superior a realizar tests individuales (como ANOVA) porque modela la probabilidad de cada clase en función de todos los predictores simultáneamente, revelando la fuerza, dirección y significancia de la asociación de cada predictor con cada tipo de región.
+
+**Decisión de Implementación:**
+
+1.  **Modelo:** Se ajustará un modelo de regresión multinomial con la función `multinom()` del paquete `nnet`, usando `class` como variable de respuesta y todos los demás predictores.
+2.  **Manejo Computacional:** Dado que ajustar este modelo con más de 170,000 observaciones y 40 predictores es computacionalmente intensivo, el modelo se entrenará una única vez. El objeto del modelo y su resumen se guardarán en ficheros `.rds`. En las ejecuciones posteriores del `Knit`, estos resultados se cargarán directamente para evitar re-calcularlos, tal y como se aconseja en la guía de la práctica.
+3.  **Análisis de Resultados:** En lugar de imprimir la enorme tabla de coeficientes, se calcularán los p-valores para cada coeficiente y se visualizarán en un **heatmap**. Esto permitirá identificar rápidamente qué predictores están significativamente asociados con qué clases.
+
+```{r train_multinomial_model, eval=FALSE}
+# --- CHUNK DE CÓMPUTO PESADO ---
+# ESTE CHUNK SE EJECUTA MANUALMENTE UNA SOLA VEZ Y LUEGO SE DESACTIVA CON eval=FALSE
+# Su propósito es entrenar el modelo y guardar los resultados en disco.
+
+# Se escalan los predictores numéricos para mejorar la estabilidad y convergencia del modelo.
+preproc_values <- preProcess(data_imputed[, -which(names(data_imputed) == "class")], method = c("center", "scale"))
+data_scaled <- predict(preproc_values, data_imputed)
+
+# Se ajusta el modelo multinomial. La fórmula class ~ . indica que se usarán todos los demás predictores.
+# MaxNWts se aumenta para permitir un mayor número de pesos (coeficientes) en el modelo.
+# trace = TRUE muestra el progreso del entrenamiento.
+multinom_model <- nnet::multinom(class ~ ., data = data_scaled, MaxNWts = 2000, trace = TRUE)
+
+# Se guardan el modelo entrenado para no tener que volver a calcularlo.
+saveRDS(multinom_model, file = "multinom_model.rds")
+
+# Se calculan los p-valores a partir de los coeficientes y errores estándar del modelo.
+summary_model <- summary(multinom_model)
+z_scores <- summary_model$coefficients / summary_model$standard.errors
+p_values <- (1 - pnorm(abs(z_scores))) * 2
+
+# Se guardan los p-valores para su uso posterior.
+saveRDS(p_values, file = "multinom_p_values.rds")
+```
+
+```{r load_and_analyze_multinom_results}
+# --- CHUNK DE CARGA Y VISUALIZACIÓN ---
+
+# Definimos rutas de los ficheros
+model_file <- "multinom_model.rds"
+pval_file  <- "multinom_p_values.rds"
+
+# 1. Comprobación de existencia de ficheros
+missing_files <- c()
+if (!file.exists(model_file)) missing_files <- c(missing_files, model_file)
+if (!file.exists(pval_file))  missing_files <- c(missing_files, pval_file)
+
+if (length(missing_files) > 0) {
+  stop(
+    sprintf("No se encontraron los siguientes ficheros:\n  • %s\nPor favor, ejecute el chunk 'train_multinomial_model' primero.", 
+            paste(missing_files, collapse = "\n  • "))
+  )
+}
+
+# 2. Lectura y visualización con manejo específico de errores
+tryCatch({
+  # Carga de los .rds
+  multinom_model <- readRDS(model_file)
+  p_values       <- readRDS(pval_file)
+  
+  # --- Visualización de la Significancia con un Heatmap ---
+  p_values_transformed <- -log10(p_values)
+  p_values_df <- as.data.frame(p_values_transformed) %>%
+    tibble::rownames_to_column("Class") %>%
+    pivot_longer(-Class, names_to = "Predictor", values_to = "neg_log10_p")
+
+  heatmap_plot <- ggplot(p_values_df, aes(Predictor, Class, fill = neg_log10_p)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "ivory", high = "darkred", name = "-log10(p-valor)") +
+    labs(
+      title    = "Significancia de la Asociación de Predictores por Clase",
+      subtitle = "Regresión Multinomial (Clase de referencia: 5-UTR)",
+      x        = "Predictor", 
+      y        = "Clase"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x     = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+      plot.title      = element_text(hjust = 0.5),
+      plot.subtitle   = element_text(hjust = 0.5)
+    )
+  
+  print(heatmap_plot)
+
+}, error = function(e) {
+  # Mostramos el mensaje real del error
+  stop("Error al cargar o procesar los ficheros: ", e$message)
+})
+```
+
+**Interpretación de los Resultados:**
+
+El heatmap muestra la significancia (`-log10(p-valor)`) de la asociación de cada predictor con cada clase, en comparación con la clase de referencia `5-UTR`.
+
+* **Colores Rojos Intensos:** Indican un p-valor muy bajo (alta significancia). Muestran que un predictor es muy importante para distinguir esa clase específica de la clase `5-UTR`.
+* **Colores Claros (Marfil):** Indican un p-valor alto (baja significancia), sugiriendo que el predictor no ayuda a discriminar entre esa clase y la de referencia.
+
+**Observaciones Clave:**
+
+1.  **Poder Discriminatorio General:** Casi todos los predictores muestran una asociación significativa (colores intensos) con al menos una clase, especialmente con `ICE` y `UTR`. Esto confirma que el conjunto de datos es rico en información para la clasificación.
+2.  **Predictores Estrella:** Variables como `mean_phastCons7way`, `meanPd`, `meanEE`, y la mayoría de las que miden la composición de dinucleótidos (e.g., `CG`, `AT`) son altamente significativas para casi todas las clases. Esto las posiciona como candidatas a ser las variables más importantes en los modelos de machine learning.
+3.  **Especificidad por Clase:** Algunos predictores son particularmente buenos para clases específicas. Por ejemplo, se puede observar si una variable tiene un color rojo intenso para `lncRNA` pero no para otras, lo que indicaría su valor para identificar ese tipo de región en particular.
+
+**Conclusión:**
+
+El análisis de regresión multinomial confirma de manera robusta y detallada que **existe una fuerte asociación entre los predictores y los tipos de región genómica**. Este análisis no solo valida la utilidad de los predictores para la tarea de clasificación, sino que también nos proporciona una primera idea de qué variables serán las más influyentes en los modelos a construir.
+
+# 1.5. ¿Se distribuyen de forma normal las variables? ¿Presentan valores fuera de rango?
+
+Evaluar la distribución de las variables y la presencia de outliers es importante para comprender la naturaleza de los datos.
+
+```{r outlier_analysis_boxplot}
+# Se seleccionan las 5 variables de interés para una visualización más detallada.
+selected_vars_for_boxplot <- c("mean_phastCons7way", "meanPd", "meanEE", "CG", "RepeatsOverlap")
+data_for_boxplot <- data_imputed %>% select(all_of(selected_vars_for_boxplot), class)
+
+# Se generan boxplots para cada variable, agrupados por clase.
+lapply(selected_vars_for_boxplot, function(var) {
+  p <- ggplot(data_for_boxplot, aes_string(x = "class", y = var, fill = "class")) +
+    geom_boxplot(show.legend = FALSE, outlier.shape = 21, outlier.size = 1.5) +
+    labs(
+      title = paste("Distribución de", var, "por Clase"),
+      x = "Tipo de Región", y = var
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), plot.title = element_text(hjust = 0.5))
+  print(p)
+})
+```
+
+**Conclusión sobre Distribución y Outliers:**
+
+Los boxplots muestran que la mayoría de las variables **no siguen una distribución normal** y presentan una **gran cantidad de outliers**. Crucialmente, tanto la distribución como los outliers varían significativamente entre las clases, reforzando la idea de que estas variables son informativas para la clasificación. Dado que se usarán modelos robustos a la no-normalidad y a los outliers (Random Forest), **no se realizará ninguna transformación ni eliminación de estos valores**, ya que podrían contener información biológica relevante.
+
