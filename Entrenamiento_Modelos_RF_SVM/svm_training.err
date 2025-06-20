@@ -1,0 +1,21 @@
+Loading required package: lattice
+Loading required package: ggplot2
+Warning message:
+replacing previous import ‘lifecycle::last_warnings’ by ‘rlang::last_warnings’ when loading ‘pillar’ 
+
+Attaching package: ‘kernlab’
+
+The following object is masked from ‘package:ggplot2’:
+
+    alpha
+
+Loading required package: foreach
+Loading required package: iterators
+Loading required package: parallel
+Warning message:
+In nominalTrainWorkflow(x = x, y = y, wts = weights, info = trainInfo,  :
+  There were missing values in resampled performance measures.
+
+real	70m25,476s
+user	2m41,923s
+sys	4m36,653s

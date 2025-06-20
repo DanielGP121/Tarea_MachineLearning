@@ -1,0 +1,11 @@
+Loading required package: lattice
+Loading required package: ggplot2
+Warning message:
+replacing previous import ‘lifecycle::last_warnings’ by ‘rlang::last_warnings’ when loading ‘pillar’ 
+Loading required package: foreach
+Loading required package: iterators
+Loading required package: parallel
+
+real	62m16,427s
+user	1m10,748s
+sys	0m4,922s

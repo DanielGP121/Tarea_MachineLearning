@@ -1,0 +1,81 @@
+========================================================
+Lanzando trabajo de entrenamiento de SVM
+Fecha: dom jun 15 13:52:58 CEST 2025
+Nodo: ledley
+Directorio: /home/alumno09/Tarea_MachineLearning
+CPUs asignadas: 20
+========================================================
+
+-> Registrados 20 cores para el entrenamiento en paralelo.
+-> Cargando el conjunto de entrenamiento completo 'train_set.rds'...
+-> Realizando submuestreo estratificado para SVM (objetivo: ~40,000 muestras) por eficiencia...
+-> Conjunto de entrenamiento para SVM reducido a 40037 muestras.
+-> Limpiando los nombres de los niveles de la variable 'class'...
+-> Nuevos nombres de clase:
+[1] "X5.UTR"     "ICE"        "lncRNA"     "ncRNA"      "pseudoGene"
+[6] "UTR"       
+-> Estrategia de entrenamiento definida.
+-> Grid de hiperparámetros para SVM definido.
+
+*** INICIANDO ENTRENAMIENTO DEL MODELO SVM ***
+Aggregating results
+Selecting tuning parameters
+Fitting sigma = 0.01, C = 10 on full training set
+
+*** ENTRENAMIENTO FINALIZADO ***
+-> Guardando el objeto del modelo en 'modelo_svm_final.rds'...
+
+-> Resumen del modelo entrenado:
+Support Vector Machines with Radial Basis Function Kernel 
+
+40037 samples
+   41 predictor
+    6 classes: 'X5.UTR', 'ICE', 'lncRNA', 'ncRNA', 'pseudoGene', 'UTR' 
+
+Pre-processing: centered (41), scaled (41) 
+Resampling: Cross-Validated (10 fold, repeated 3 times) 
+Summary of sample sizes: 36033, 36034, 36032, 36033, 36034, 36034, ... 
+Addtional sampling using down-sampling prior to pre-processing
+
+Resampling results across tuning parameters:
+
+  sigma  C     logLoss    AUC        prAUC      Accuracy   Kappa      Mean_F1  
+  0.01    0.1  0.8547905  0.8571949  0.4218650  0.7295250  0.4738552  0.3755736
+  0.01    1.0  0.7684110  0.8734683  0.4603905  0.7876212  0.5709734  0.4387877
+  0.01   10.0  0.7774085  0.8715731  0.4625730  0.7961802  0.5850218  0.4472190
+  0.05    0.1  0.8548644  0.8545417  0.4463677  0.7436788  0.5075974  0.4047923
+  0.05    1.0  0.7919468  0.8665120  0.4638989  0.7843578  0.5685365  0.4385332
+  0.05   10.0  0.9058818  0.8455006  0.4304856  0.7553350  0.5251409  0.4207503
+  0.10    0.1  0.9167185  0.8473296  0.4470408  0.7142724  0.4750289  0.3990211
+  0.10    1.0  0.8416295  0.8540555  0.4571384  0.7620784  0.5373471  0.4239476
+  0.10   10.0  0.9197929  0.8427051  0.4323686  0.7428044  0.5084404  0.4129592
+  Mean_Sensitivity  Mean_Specificity  Mean_Pos_Pred_Value  Mean_Neg_Pred_Value
+  0.4136622         0.9415933         0.4058600            0.9187749          
+  0.4709813         0.9518160         0.4468032            0.9332139          
+  0.4733752         0.9531049         0.4625450            0.9355502          
+  0.4473951         0.9443780         0.4265880            0.9196732          
+  0.4706648         0.9510280         0.4530533            0.9308235          
+  0.4506864         0.9454475         0.4268578            0.9219694          
+  0.4444433         0.9393768         0.4250767            0.9111394          
+  0.4573709         0.9470648         0.4452707            0.9234274          
+  0.4439304         0.9432224         0.4294718            0.9182318          
+  Mean_Precision  Mean_Recall  Mean_Detection_Rate  Mean_Balanced_Accuracy
+  0.4058600       0.4136622    0.1215875            0.6776278             
+  0.4468032       0.4709813    0.1312702            0.7113987             
+  0.4625450       0.4733752    0.1326967            0.7132401             
+  0.4265880       0.4473951    0.1239465            0.6958865             
+  0.4530533       0.4706648    0.1307263            0.7108464             
+  0.4268578       0.4506864    0.1258892            0.6980670             
+  0.4250767       0.4444433    0.1190454            0.6919100             
+  0.4452707       0.4573709    0.1270131            0.7022179             
+  0.4294718       0.4439304    0.1238007            0.6935764             
+
+Kappa was used to select the optimal model using the largest value.
+The final values used for the model were sigma = 0.01 and C = 10.
+
+-> Proceso completado. Clúster de paralelización detenido.
+
+========================================================
+Trabajo de SVM finalizado.
+Fecha: dom jun 15 15:03:23 CEST 2025
+========================================================

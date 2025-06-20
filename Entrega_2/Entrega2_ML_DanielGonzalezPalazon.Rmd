@@ -1,0 +1,277 @@
+---
+title: "Práctica Final Machine Learning 2024/2025 - Pregunta 4"
+subtitle: "Master en Bioinformática, Universidad de Murcia"
+author: "Daniel González Palazón"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  html_document:
+    df_print: paged
+    highlight: kate
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+# --- Configuración Global del Documento ---
+# Establece las opciones por defecto para todos los chunks de código R.
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE, fig.align = 'center')
+```
+
+### Definición del Directorio de Trabajo y Carga de Librerías
+
+Esta sección inicial prepara el entorno de trabajo.
+1.  **Define la ruta base** donde se encuentra el fichero de datos `data_imputed.rds`.
+2.  **Establece el directorio de trabajo** para la sesión de R.
+3.  **Carga todas las librerías** necesarias para el análisis.
+
+```{r initial_setup_q4}
+# --- MODIFICAR AQUÍ LA RUTA AL DIRECTORIO DE TRABAJO ---
+work_dir <- "C:/Users/there/Desktop/Machine Learning/Tareas/Prueba final/Tarea 2"
+setwd(work_dir)
+cat("Directorio de trabajo establecido en:\n", getwd(), "\n")
+
+# --- Reproducibilidad y Carga de Librerías ---
+# Se fija una semilla para los procesos aleatorios (como UMAP).
+set.seed(123)
+
+# Se cargan las librerías necesarias para el análisis.
+library(dplyr)      
+library(tidyr)     
+library(dbscan)     
+library(ggplot2)    
+library(umap)       
+library(knitr)      
+library(patchwork)  
+```
+
+# PREGUNTA 4: Usa modelos de clústering para descubrir grupos nuevos
+
+En este apartado, tal y como se solicita en el enunciado de la práctica, se realizará un análisis de clustering sobre un subconjunto específico del dataset: las regiones anotadas como ARN no codificante (`ncRNA`). El objetivo es doble:
+
+1.  Determinar si es posible identificar subgrupos o clústeres fiables dentro de la clase `ncRNA` utilizando el algoritmo DBSCAN.
+2.  En caso de encontrar clústeres, intentar caracterizarlos y ofrecer una interpretación biológica preliminar basada en las variables predictoras.
+
+Para asegurar que este documento sea autocontenido y reproducible, el primer paso consistirá en cargar y procesar el conjunto de datos completo y limpio antes de filtrar las regiones de interés.
+
+---
+
+### Carga y Preparación del Conjunto de Datos
+
+El primer paso es cargar el dataset completo (previamente limpiado) y aislar las observaciones de interés. Posteriormente, se realiza un escalado de las variables, un paso crucial para algoritmos basados en distancia como DBSCAN, ya que evita que las variables con rangos de valores más amplios dominen el análisis.
+
+```{r data_loading_preparation_q4}
+# --- Carga de Datos Limpios ---
+data_file_path <- file.path(work_dir, "data_imputed.rds")
+
+tryCatch({
+  data_imputed <- readRDS(data_file_path)
+  cat("Dataset 'data_imputed.rds' cargado correctamente.\n")
+}, error = function(e) {
+  stop("Error al cargar 'data_imputed.rds'. Asegúrate de que el fichero se encuentra en el directorio de trabajo definido.")
+})
+
+# --- Filtrado de Datos para Clustering ---
+ncRNA_data <- data_imputed %>%
+  filter(class == "ncRNA") %>%
+  select(-class) 
+
+# --- Selección de Predictores Numéricos y Escalado ---
+ncRNA_numeric_data <- ncRNA_data %>% 
+  select(where(is.numeric))
+
+cat("Dimensiones del subset ncRNA a analizar (solo predictores numéricos):", nrow(ncRNA_numeric_data), "filas y", ncol(ncRNA_numeric_data), "columnas.\n")
+
+ncRNA_scaled <- scale(ncRNA_numeric_data)
+ncRNA_scaled_df <- as.data.frame(ncRNA_scaled)
+
+cat("Los datos de ncRNA han sido escalados y preparados para el clustering.\n")
+```
+
+### Aplicación del Algoritmo DBSCAN
+
+DBSCAN es un algoritmo que no requiere pre-especificar el número de clústeres y es capaz de identificar grupos de formas arbitrarias y puntos de ruido. Su éxito depende de la correcta elección de sus dos parámetros: `minPts` y `eps`.
+
+### Determinación de Hiperparámetros para DBSCAN
+
+La técnica apropiada para determinar los hiperparámetros de DBSCAN es un proceso razonado de dos pasos:
+
+1.  **Selección de `minPts`:** `minPts` es el número mínimo de puntos para formar una región densa. Para datos de alta dimensionalidad (en nuestro caso, más de 40 predictores), una regla general robusta es establecer `minPts = 2 * Dimensiones`. Esto asegura que los clústeres encontrados tengan una densidad estadísticamente significativa y no sean simplemente agrupaciones aleatorias.
+
+2.  **Selección de `eps`:** Una vez fijado `minPts`, el valor de `eps` (el radio de vecindad) se estima visualmente mediante un **gráfico de distancias k-NN** (`kNNdistplot`). Este gráfico ordena cada punto según la distancia a su k-ésimo vecino más cercano (donde `k = minPts`). El punto óptimo para `eps` se encuentra en el "codo" de la curva, que representa el umbral de distancia donde la densidad de los datos cambia drásticamente.
+
+```{r determine_parameters, fig.cap="Gráfico de k-distancias para determinar el valor óptimo de eps. La línea roja discontinua marca el 'codo' visualmente identificado."}
+# --- Determinación de minPts ---
+d <- ncol(ncRNA_scaled_df)
+minPts_val <- 2 * d
+cat("Dimensionalidad de los datos (d):", d, "\n")
+cat("Valor de minPts sugerido (2*d):", minPts_val, "\n")
+
+# --- Determinación de eps con kNNdistplot ---
+# Se genera el gráfico de distancias k-NN para identificar el "codo".
+dbscan::kNNdistplot(ncRNA_scaled_df, k = minPts_val)
+eps_val <- 6.8 # <-- VALOR AJUSTADO TRAS INSPECCIÓN VISUAL
+abline(h = eps_val, lty = 2, col = "darkred", lwd = 2)
+title(main = paste("Gráfico de Distancia k-NN (k=", minPts_val, ") para la clase ncRNA"))
+
+cat("Valor de eps seleccionado:", eps_val, "\n")
+```
+
+### Ejecución de DBSCAN
+
+Con los hiperparámetros ya definidos (`eps = 6.8`, `minPts = 80`), procedemos a ejecutar el algoritmo, aplicando la estrategia de guardar y cargar los resultados para optimizar la ejecución del informe.
+
+```{r run_and_save_dbscan}
+dbscan_result <- dbscan::dbscan(ncRNA_scaled_df, eps = eps_val, minPts = minPts_val)
+saveRDS(dbscan_result, file = file.path(work_dir, "dbscan_result.rds"))
+cat("Resultados de DBSCAN calculados y guardados.\n")
+
+dbscan_file_path <- file.path(work_dir, "dbscan_result.rds")
+tryCatch({
+  dbscan_result <- readRDS(dbscan_file_path)
+  cat("Resultados de DBSCAN cargados desde 'dbscan_result.rds'.\n")
+}, error = function(e) {
+  stop(paste("El fichero 'dbscan_result.rds' no se encontró. Ejecute el chunk anterior con 'eval=TRUE'."))
+})
+
+print(dbscan_result)
+ncRNA_scaled_df$cluster <- factor(dbscan_result$cluster)
+```
+
+## ¿Cuántos clusters fiables es posible encontrar?
+
+El resultado de DBSCAN es inequívoco. El algoritmo ha identificado **`r length(unique(dbscan_result$cluster)) - 1` clúster(es) fiables** y ha clasificado `r sum(dbscan_result$cluster == 0)` puntos como ruido (outliers).
+
+La fiabilidad de este hallazgo se sustenta en:
+1.  **Metodología Justificada:** La elección de los hiperparámetros se basó en heurísticas estándar y en el análisis visual del gráfico k-NN, una técnica apropiada y recomendada para DBSCAN.
+2.  **Robustez de DBSCAN:** A diferencia de otros métodos que fuerzan a cada punto a pertenecer a un clúster, DBSCAN tiene la capacidad de identificar outliers. El hecho de que solo un `r round(100*sum(dbscan_result$cluster == 0)/length(dbscan_result$cluster), 2)`% de los datos haya sido clasificado como ruido sugiere que el clúster encontrado es una estructura de densidad coherente y no un artefacto del algoritmo.
+
+Para confirmar visualmente esta estructura, se proyectan los datos y los clústeres en un espacio de 2 dimensiones usando UMAP.
+
+```{r evaluate_visualize_clusters, fig.width=10, fig.height=8}
+# --- Resumen Numérico de los Clusters ---
+num_clusters <- length(unique(dbscan_result$cluster)) - (if (0 %in% dbscan_result$cluster) 1 else 0)
+noise_points <- sum(dbscan_result$cluster == 0)
+
+# --- Visualización con UMAP ---
+umap_file_path <- file.path(work_dir, "umap_layout_ncRNA.rds")
+
+if (!file.exists(umap_file_path)) {
+  cat("Calculando layout UMAP (puede tardar un momento)...\n")
+  set.seed(123)
+  umap_obj <- umap::umap(ncRNA_scaled_df[, 1:d])
+  saveRDS(umap_obj, file = umap_file_path)
+} else {
+  cat("Cargando layout UMAP pre-calculado.\n")
+  umap_obj <- readRDS(umap_file_path)
+}
+
+umap_data <- as.data.frame(umap_obj$layout)
+colnames(umap_data) <- c("UMAP1", "UMAP2")
+umap_data$cluster <- ncRNA_scaled_df$cluster
+
+# --- Gráfico de Clusters en Espacio UMAP ---
+ggplot(umap_data, aes(x = UMAP1, y = UMAP2, color = cluster, shape = cluster)) +
+  geom_point(alpha = 0.8, size = 2.5) +
+  scale_shape_manual(values = c("0" = 4, "1" = 16)) + 
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Visualización de Clusters de ncRNA en Espacio UMAP",
+    subtitle = paste(num_clusters, "clúster encontrado y", noise_points, "puntos de ruido"),
+    x = "Componente UMAP 1",
+    y = "Componente UMAP 2",
+    color = "Cluster ID",
+    shape = "Cluster ID"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "bottom")
+```
+
+## ¿Podrías dar alguna pista sobre a qué se refiere cada grupo?
+
+Para interpretar y caracterizar el clúster encontrado, se utiliza una doble aproximación:
+1.  Un **heatmap** para obtener una visión general del perfil de características del clúster principal en comparación con los puntos de ruido.
+2.  **Boxplots** para comparar de forma más detallada la distribución de las variables más importantes entre el clúster y el ruido.
+
+```{r interpret_clusters_combined, fig.width=14, fig.height=16}
+# --- 1. Preparación de Datos para Interpretación ---
+# Se calculan las medias de las características para el clúster y el ruido.
+cluster_summary <- ncRNA_scaled_df %>%
+  group_by(cluster) %>%
+  summarise(across(where(is.numeric), mean, .names = "mean_{.col}"),
+            count = n()) %>%
+  arrange(as.numeric(as.character(cluster)))
+
+# Se seleccionan las 15 características con mayor varianza entre el clúster y el ruido.
+top_varying_features <- ncRNA_scaled_df %>%
+    select(-cluster) %>%
+    summarise(across(everything(), var)) %>%
+    pivot_longer(everything(), names_to = "feature", values_to = "variance") %>%
+    slice_max(variance, n=15) %>%
+    pull(feature)
+
+# --- 2. Heatmap de Perfiles ---
+heatmap_data <- cluster_summary %>%
+    select(cluster, count, starts_with("mean_")) %>%
+    rename_with(~ sub("mean_", "", .), starts_with("mean_")) %>%
+    select(cluster, count, all_of(top_varying_features)) %>%
+    pivot_longer(-c(cluster, count), names_to = "feature", values_to = "mean_value")
+
+plot_heatmap <- ggplot(heatmap_data, aes(x = feature, y = paste("Cluster", cluster, "(n=",count,")"), fill = mean_value)) +
+    geom_tile(color="white") +
+    scale_fill_gradient2(low = "royalblue3", mid = "white", high = "firebrick3", midpoint = 0, name="Valor Medio\nEscalado") +
+    labs(subtitle = "A) Perfil Promedio de Características", x = NULL, y = NULL) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+          plot.subtitle = element_text(hjust = 0.5, face="bold", size=14))
+
+# --- 3. Boxplots de Distribuciones ---
+# Se preparan los datos para los boxplots, usando los datos originales para una escala interpretable.
+boxplot_data <- ncRNA_data %>%
+    mutate(cluster = factor(dbscan_result$cluster)) %>%
+    select(cluster, all_of(top_varying_features)) %>%
+    pivot_longer(-cluster, names_to = "Predictor", values_to = "Value")
+    
+plot_boxplots <- ggplot(boxplot_data, aes(x = cluster, y = Value, fill = cluster)) +
+  geom_boxplot(show.legend = FALSE, outlier.alpha = 0.3) +
+  facet_wrap(~ Predictor, scales = "free_y", ncol = 5) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    subtitle = "B) Distribución de las Características Clave por Grupo",
+    x = "Grupo Asignado por DBSCAN",
+    y = "Valor del Predictor"
+  ) +
+  theme_bw() +
+  theme(
+    plot.subtitle = element_text(hjust = 0.5, face="bold", size=14),
+    strip.text = element_text(face = "bold")
+  )
+
+# --- 4. Combinación de Gráficos ---
+# Se usa patchwork para mostrar ambos gráficos en una misma figura.
+plot_heatmap / plot_boxplots +
+  plot_annotation(title = "Caracterización Detallada de los Grupos de ncRNA") &
+  theme(plot.title = element_text(hjust = 0.5, face="bold", size=16))
+
+```
+
+### Conclusión e Interpretación Final
+
+El análisis de clustering ha logrado agrupar a la gran mayoría de los ncRNAs (`r sum(dbscan_result$cluster != 0)`) en un único y gran **clúster principal (Clúster 1)**, dejando un pequeño número de observaciones (`r sum(dbscan_result$cluster == 0)`) como **ruido (Clúster 0)**.
+
+La caracterización de estos dos grupos nos permite proponer una interpretación funcional:
+
+* **Clúster 1 (El Grupo Principal):** Representa el perfil "típico" o canónico de un ARN no codificante en este dataset. Los boxplots muestran que, para la mayoría de las variables, los valores de este grupo se concentran en un rango definido, formando el cuerpo principal de la distribución.
+
+* **Clúster 0 (Ruido / Outliers):** Este grupo, aunque pequeño, es biológicamente interesante. **No son ncRNAs aleatorios, sino que muestran perfiles extremos y consistentes**. El heatmap y los boxplots revelan que estos ncRNAs tienen valores significativamente más altos en características como `mean_phastCons7way`, `meanEE`, `CG` y `cpgislands`, y más bajos en otras como `AT`.
+
+**Pista sobre la naturaleza de los grupos:**
+
+La evidencia sugiere que la clase `ncRNA` no es homogénea, sino que contiene una pequeña pero distintiva subpoblación.
+* El **Clúster 1** agrupa a la mayoría de los ncRNAs con características más "genéricas".
+* El **Clúster 0 (ruido)** parece identificar una subpoblación de **ncRNAs con un alto potencial funcional y regulador**. Su alta conservación evolutiva (`mean_phastCons7way`), el enriquecimiento en `CG` y `cpgislands` (típico de regiones promotoras), y una señal de transcripción más estable (`meanEE`), sugieren que podrían ser ncRNAs con roles específicos y conservados, posiblemente actuando como reguladores de la expresión génica. DBSCAN los ha aislado eficazmente como "outliers de densidad" porque, aunque comparten un perfil, son demasiado pocos para formar un clúster denso con los parámetros elegidos.
+
+En resumen, el análisis ha identificado **1 clúster principal fiable** y ha aislado un grupo de **outliers biológicamente significativos**, proporcionando una pista clara sobre la heterogeneidad funcional dentro de la clase ncRNA.

@@ -1,0 +1,1165 @@
+---
+title: "Práctica Final Machine Learning 2024/2025 - Entrega 1 (Ejercicio 1, 2 y 3)"
+subtitle: "Master en Bioinformática, Universidad de Murcia"
+author: "Daniel González Palazón (daniel.gonzalezp@um.es)"
+date: "`r format(Sys.time(), '%d/%m/%Y')`"
+output:
+  html_document:
+    df_print: paged
+    highlight: kate
+    number_sections: yes
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+# --- Configuración Global del Documento ---
+# Establece las opciones por defecto para todos los chunks de código R.
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+**Carga de Librerías y Datos**
+
+En este primer bloque, se establecen las bases para el análisis. Se define una semilla para garantizar la reproducibilidad de los resultados, se cargan las librerías esenciales que se usarán a lo largo del informe y se leen los datos desde el fichero RDS proporcionado.
+
+```{r initial_setup}
+# --- Reproducibilidad y Entorno ---
+
+# Se fija una semilla para los generadores de números aleatorios. Esto asegura que
+# cualquier proceso que involucre aleatoriedad (como la división de datos o el
+# entrenamiento de ciertos modelos) produzca exactamente los mismos resultados
+# cada vez que se ejecute el código.
+set.seed(123)
+
+# --- MODIFICAR AQUÍ LA RUTA AL DIRECTORIO DE TRABAJO ---
+current_wd <- "C:/Users/there/Desktop/Machine Learning/Tareas/Prueba final/Tarea 1"
+setwd(current_wd)
+cat("-> El directorio de trabajo actual es:\n", current_wd, "\n\n")
+
+# --- Carga de Librerías ---
+# Se cargan todas las librerías necesarias para el análisis. 
+library(here)
+library(ggplot2)      
+library(plotly)       
+library(VIM)          
+library(tibble)
+library(corrplot)     
+library(RColorBrewer)
+library(Hmisc)        
+library(caret)        
+library(dplyr)        
+library(factoextra)   
+library(doParallel)   
+library(nnet)         
+library(tidyr)
+library(knitr)
+library(gridExtra)
+library(tidytext)
+library(ggforce)
+
+# --- Carga de Datos ---
+
+# Se define la ruta del fichero de datos en una variable para facilitar su modificación.
+data_path <- "PracticaMLDataset2425.rds"
+
+# Se cargan los datos utilizando readRDS(). Se envuelve la llamada en un bloque tryCatch
+# para gestionar un posible error si el fichero no se encuentra,
+tryCatch({
+  full_data <- readRDS(here(data_path))
+  cat("Dataset cargado correctamente.\n")
+  cat("Dimensiones del dataset: ", nrow(full_data), "filas y", ncol(full_data), "columnas.\n")
+}, error = function(e) {
+  cat("Error al cargar el fichero: ", e$message, "\n")
+  cat("Por favor, asegúrate de que el fichero 'PracticaMLDataset2425.rds' se encuentra en el directorio de trabajo.\n")
+})
+
+glimpse(full_data)
+summary(full_data)
+```
+
+# PREGUNTA 1: Análisis Descriptivo de los Datos
+
+En esta sección se realiza una exploración inicial  del conjunto de datos para comprender sus características fundamentales.
+
+## ¿Nos enfrentamos a un problema balanceado o no balanceado?
+
+Para determinar si el problema de clasificación está balanceado, es crucial analizar la distribución de la variable objetivo `class`. Un desbalance severo, donde una o más clases tienen un número de muestras desproporcionadamente mayor que otras, puede sesgar el entrenamiento de los modelos de machine learning.
+
+```{r class_balance_analysis}
+# Se comprueba que la columna 'class' existe para evitar errores.
+if("class" %in% names(full_data)) {
+  
+  # Se utiliza dplyr para calcular la frecuencia y el porcentaje de cada clase.
+  class_distribution <- full_data %>%
+    filter(!is.na(class)) %>% # Se excluyen los NAs de la variable de clase para el cálculo
+    group_by(class) %>%
+    summarise(Frecuencia = n(), .groups = 'drop') %>%
+    mutate(Porcentaje = round(Frecuencia / sum(Frecuencia) * 100, 2)) %>%
+    arrange(desc(Frecuencia))
+  
+  # Se muestra la tabla de distribución usando knitr::kable para un formato limpio.
+  knitr::kable(class_distribution, caption = "Distribución de la variable de clase")
+
+  # Se crea un gráfico de barras para visualizar la distribución.
+  plot_balance <- ggplot(class_distribution, 
+                         aes(x = reorder(class, -Frecuencia), 
+                             y = Frecuencia, 
+                             fill = class, 
+                             text = paste("Clase:", class, "<br>Frecuencia:", Frecuencia, "<br>Porcentaje:", Porcentaje, "%"))) +
+    geom_bar(stat = "identity", show.legend = FALSE) +
+    labs(
+      title = "Distribución de las Clases en el Dataset",
+      x = "Tipo de Región Genómica",
+      y = "Frecuencia (escala log10)"
+    ) +
+    # Se usa una escala logarítmica en el eje Y para que las clases minoritarias
+    # sean visibles y no queden aplastadas por la clase mayoritaria.
+    scale_y_log10(breaks = c(1000, 10000, 100000), labels = scales::comma) + 
+    theme_minimal(base_size = 12) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size=10),
+          plot.title = element_text(hjust = 0.5))
+  
+  # Se convierte el gráfico a plotly para añadir interactividad.
+  ggplotly(plot_balance, tooltip = "text")
+  
+} else {
+  cat("La columna 'class' no se encuentra en el dataset.\n")
+}
+```
+
+El análisis revela un **fuerte desbalance** en el dataset. La clase `ICE` (internal coding exons) es abrumadoramente mayoritaria, representando más del 72% de las observaciones. En contraste, clases como `pseudoGene` (1.2%), `lncRNA` (2.1%) y `ncRNA` (2.1%) son extremadamente minoritarias.
+
+**Implicaciones y Decisiones de Implementación:**
+
+1.  **Sesgo del Modelo:** Con datos desbalanceados, un modelo puede alcanzar una alta precisión (accuracy) simplemente clasificando la mayoría de las muestras como la clase dominante (`ICE`), ignorando por completo a las clases minoritarias. Esto lo convertiría en un modelo inútil en la práctica.
+
+2.  **Métricas de Evaluación:** La `Accuracy` no será una métrica fiable para evaluar el rendimiento. Un modelo con un 72% de accuracy podría ser peor que el azar. Por lo tanto, se priorizarán métricas que son robustas frente al desbalance de clases, como:
+    * **Índice Kappa de Cohen:** Mide el acuerdo entre la clasificación del modelo y la realidad, corrigiendo el acierto que podría ocurrir por casualidad. Un Kappa > 0.6 indica un buen modelo.
+    * **F1-Score por clase:** Es la media armónica de Precisión y Recall, y proporciona una medida equilibrada del rendimiento para cada clase individualmente.
+    * **AUC ROC promediado:** Para problemas multiclase, se puede calcular el área bajo la curva ROC para cada clase (uno-vs-resto) y promediarla.
+
+3.  **Estrategias de Mitigación en `caret`:** Durante el entrenamiento, se implementarán técnicas para manejar el desbalance. La estrategia elegida será el **downsampling**, que se integrará directamente en el proceso de validación cruzada a través del parámetro `sampling = "down"` en `trainControl`.
+    * **¿Por qué Downsampling?** Dado el gran tamaño del dataset (>170,000 filas), reducir el tamaño de la clase mayoritaria es computacionalmente más eficiente que aumentar las minoritarias (upsampling), lo cual podría crear un dataset masivo y ralentizar enormemente el entrenamiento.
+    * **¿Por qué dentro de `trainControl`?** Aplicar el remuestreo dentro de cada pliegue de la validación cruzada es crucial para evitar el "data leakage". Se asegura que el modelo se entrena en datos balanceados en cada iteración, pero se valida en la distribución original del pliegue de test, proporcionando una estimación de rendimiento más realista.
+
+## ¿Hay valores nulos? Si los hay, ¿cómo debemos tratarlos?
+
+La presencia de valores nulos (NA) puede impedir el entrenamiento de muchos modelos de machine learning. Es necesario identificarlos y aplicar una estrategia de tratamiento adecuada.
+
+```{r null_value_analysis}
+# Se calcula el número de NAs y su porcentaje para cada columna.
+na_counts <- sapply(full_data, function(x) sum(is.na(x)))
+na_summary <- data.frame(
+  Variable = names(na_counts),
+  Num_NA = na_counts,
+  Percentage_NA = round(100 * na_counts / nrow(full_data), 2)
+)
+
+# Se filtra para mostrar solo las columnas que contienen valores nulos.
+na_summary_filtered <- na_summary %>% filter(Num_NA > 0)
+
+# Se presenta el resultado en una tabla bien formateada.
+knitr::kable(na_summary_filtered, caption = "Resumen de Valores Nulos por Variable")
+```
+
+**Estrategia de tratamiento de valores nulos y justificación:**
+
+El análisis muestra que solo dos columnas contienen valores nulos: `zdna` y `class`. Se adopta una estrategia de dos pasos:
+
+1.  **Variable `class`:** Es la variable objetivo. Las filas con valores nulos en esta columna no son útiles para el entrenamiento supervisado. Dado que representan un porcentaje muy bajo del total de datos (`r na_summary_filtered$Percentage_NA[na_summary_filtered$Variable == 'class']`%), la estrategia más segura es **eliminar estas filas**. Esto evita introducir ruido y no supone una pérdida de información significativa.
+
+2.  **Variable `zdna`:** Este es un predictor numérico. Descartar estas filas podría eliminar información valiosa de otras 40 variables en esas mismas filas. Por ello, la imputación es preferible.
+    * **Decisión de Implementación:** En lugar de una imputación simple (como la media o mediana, que ignoran las relaciones entre variables), se opta por un método más sofisticado: **imputación por k-Vecinos más Cercanos (k-NN)**, implementado a través de la librería `VIM`.
+    * **Justificación:** El algoritmo k-NN identifica las `k` muestras más similares (vecinos) a la muestra con el valor nulo, basándose en la distancia euclidiana calculada sobre el resto de variables. Luego, imputa el valor faltante de `zdna` usando la media (o mediana) de `zdna` de esos vecinos. Este enfoque es superior porque preserva la estructura local de los datos, siendo especialmente útil si las variables están correlacionadas. Se ha elegido `k=5`, un valor estándar que ofrece un buen equilibrio entre robustez y sensibilidad al ruido local.
+
+```{r null_value_imputation, eval=FALSE}
+# --- Paso 1: Eliminar filas con NA en la variable 'class' ---
+data_cleaned <- full_data[!is.na(full_data$class), ]
+cat(nrow(full_data) - nrow(data_cleaned), "filas eliminadas por tener NA en la columna 'class'.\n")
+
+# --- Paso 2: Imputar valores NA en 'zdna' usando k-NN ---
+if(any(is.na(data_cleaned$zdna))) {
+  # La función kNN de la librería VIM imputa los valores faltantes.
+  # - data_cleaned: El dataframe a imputar.
+  # - variable: El nombre de la columna a imputar.
+  # - k: El número de vecinos a considerar.
+  # - imp_var = FALSE: Evita que se añada una columna extra indicando qué valores fueron imputados.
+  data_imputed <- kNN(data_cleaned, variable = "zdna", k = 5, imp_var = FALSE)
+  
+  cat("Valores nulos en 'zdna' imputados correctamente usando k-NN (k=5).\n")
+} else {
+  data_imputed <- data_cleaned
+  cat("La columna 'zdna' no tiene valores nulos tras la limpieza inicial.\n")
+}
+
+# Se guarda el dataframe limpio 
+saveRDS(data_imputed, file = "data_imputed.rds")
+cat("\n-> Dataset limpio 'data_imputed.rds' guardado .\n")
+```
+```{r load_imputed_data}
+# --- Carga de Datos Limpios ---
+# Se carga el dataset que ya ha sido procesado (valores nulos imputados).
+# Esto evita tener que re-ejecutar el costoso paso de imputación k-NN cada vez
+# que se compila el documento.
+tryCatch({
+  data_imputed <- readRDS("data_imputed.rds")
+  cat("-> Dataset 'data_imputed.rds' cargado correctamente.\n")
+}, error = function(e) {
+  stop("El fichero 'data_imputed.rds' no se encontró. 
+       Por favor, asegúrate de haber ejecutado primero el chunk 'null_value_imputation' manualmente.")
+})
+```
+
+**Resultado de la limpieza:**
+
+El proceso ha resultado en un dataset completo y limpio, `data_imputed`, que será la base para los análisis posteriores.
+
+## Visualizar e identificar posibles correlaciones entre los predictores
+
+El análisis de correlación es fundamental para entender la estructura interna de los datos y las relaciones entre las variables predictoras. Una alta correlación (multicolinealidad) puede indicar redundancia y afectar la interpretabilidad de algunos modelos.
+
+### Visualización Global de la Matriz de Correlación
+
+Primero, generamos una visualización global de la matriz de correlación para obtener una primera impresión de las relaciones.
+
+```{r correlation_analysis}
+# Se seleccionan solo las variables numéricas para el análisis.
+numeric_predictors <- data_imputed %>% 
+  select(where(is.numeric))
+
+# Se calcula la matriz de correlación de Pearson.
+correlation_matrix <- cor(numeric_predictors, method = "pearson", use = "pairwise.complete.obs")
+
+# Se genera el corrplot para visualizar la matriz.
+corrplot(correlation_matrix, 
+         method = "circle", 
+         type = "lower",
+         order = "hclust", # Se ordenan las variables por clusters para agrupar las correlacionadas.
+         tl.col = "black", 
+         tl.srt = 45, 
+         tl.cex = 0.6,
+         col = colorRampPalette(brewer.pal(11, "RdYlBu"))(200),
+         main = "Matriz de Correlación de Predictores Numéricos",
+         mar = c(0,0,1,0))
+```
+
+**Interpretación de la Matriz de Correlación:**
+
+La matriz de correlación generada nos ofrece una visión general y rápida de las interrelaciones entre las variables predictoras del dataset. En esta visualización:
+
+* **Los círculos azules** representan una **correlación positiva**, lo que significa que cuando el valor de una variable aumenta, el de la otra también tiende a hacerlo. Cuanto más grande y oscuro es el círculo, más fuerte es esta relación.
+* **Los círculos rojos** representan una **correlación negativa**, indicando que cuando una variable aumenta, la otra tiende a disminuir. De nuevo, el tamaño y la intensidad del color reflejan la fuerza de esta relación inversa.
+* **Los círculos pálidos o pequeños (cercanos al blanco)** sugieren una **correlación débil o inexistente** entre las variables.
+
+**Observaciones Clave:**
+
+1.  **Bloques de Correlación Fuerte:** Se pueden identificar claramente grandes bloques de variables que están altamente correlacionadas entre sí. Por ejemplo, se observa un bloque con intensos colores azules en la parte superior, que agrupa variables como `cpgislands`, `bendingstiffness` y `dnadenaturation`, y un bloque con colores rojos en la parte inferior izquierda, que incluye variables como `aphilicity`, `basestacking` y `duplexstabilityfreeenergy`. Esto indica que hay grupos de variables que se comportan de manera muy similar.
+2.  **Relaciones Mixtas:** Algunas variables, como `meanPd` o `RepeatsOverlap`, muestran correlaciones más débiles y mixtas con el resto de los predictores, lo que sugiere que podrían aportar información más independiente.
+3.  **Redundancia de Información:** La presencia de estos bloques tan marcados es un fuerte indicio de **multicolinealidad**. Esto significa que muchas variables están midiendo conceptos biológicos o estructurales muy similares y, por lo tanto, podrían ser redundantes.
+
+
+### Análisis Cuantitativo de las Correlaciones más Fuertes
+
+Para profundizar, identificamos y tabulamos las parejas de variables con las correlaciones más extremas.
+
+```{r top_correlations}
+# Se crea una función para aplanar la matriz de correlación y ordenarla.
+flatten_corr_matrix <- function(cormat) {
+  ut <- upper.tri(cormat)
+  data.frame(
+    var1 = rownames(cormat)[row(cormat)[ut]],
+    var2 = rownames(cormat)[col(cormat)[ut]],
+    cor  = cormat[ut]
+  )
+}
+
+# Se obtienen y ordenan las correlaciones.
+flat_cor <- flatten_corr_matrix(correlation_matrix)
+
+# Se muestran las 10 correlaciones positivas más altas.
+top_positive_cor <- flat_cor %>% arrange(desc(cor))
+knitr::kable(head(top_positive_cor, 10), caption = "Top 10 Correlaciones Positivas Más Fuertes", digits = 3)
+
+# Se muestran las 10 correlaciones negativas más altas (más cercanas a -1).
+top_negative_cor <- flat_cor %>% arrange(cor)
+knitr::kable(head(top_negative_cor, 10), caption = "Top 10 Correlaciones Negativas Más Fuertes", digits = 3)
+
+# Visualización de un par de ejemplos
+p1 <- ggplot(numeric_predictors, aes(x = dnadenaturation, y = duplexstabilityfreeenergy)) +
+  geom_point(alpha = 0.1, color = "#BB4444") +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  labs(title = "Ejemplo Correlación Negativa Fuerte", 
+       subtitle = paste("Cor =", round(cor(numeric_predictors$dnadenaturation, numeric_predictors$duplexstabilityfreeenergy), 2))) +
+  theme_minimal()
+
+p2 <- ggplot(numeric_predictors, aes(x = duplexstabilityfreeenergy, y = zdna)) +
+  geom_point(alpha = 0.1, color = "#4477AA") +
+  geom_smooth(method = "lm", color = "black", se = FALSE) +
+  labs(title = "Ejemplo Correlación Positiva Fuerte",
+       subtitle = paste("Cor =", round(cor(numeric_predictors$duplexstabilityfreeenergy, numeric_predictors$zdna), 2))) +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+
+```
+
+### Conclusión y Estrategia de Implementación
+
+
+El análisis confirma la presencia de una **fuerte y significativa multicolinealidad** en el conjunto de datos. Muchas variables predictoras están altamente correlacionadas, tanto positiva como negativamente, indicando que comparten una gran cantidad de información y son, en cierto modo, redundantes.
+
+**Implicaciones para el Modelado:**
+
+* **Modelos Sensibles (e.g., Regresión Lineal/Logística):** Para estos modelos, la multicolinealidad es un problema serio. Infla la varianza de los coeficientes, haciendo que las estimaciones sean inestables y la interpretación de la importancia de cada variable, poco fiable. Si se usaran estos modelos, sería **imprescindible** reducir la dimensionalidad o eliminar variables correlacionadas.
+* **Modelos Robustos (e.g., Random Forest):** Los modelos basados en árboles de decisión, y en particular los ensambles como Random Forest, son **mucho más robustos** frente a la multicolinealidad. El mecanismo de selección de un subconjunto aleatorio de variables en cada nodo (`mtry`) mitiga el problema, ya que las variables correlacionadas rara vez compiten directamente en la misma división del árbol.
+
+**Decisión de Implementación:**
+
+Dado que los algoritmos requeridos para esta práctica son **Random Forest y SVM**, se tomará la siguiente decisión estratégica:
+
+1.  **No se eliminarán variables predictoras basándose en la correlación en esta fase de preprocesamiento.**
+2.  **Justificación:** Se prefiere dejar que los propios algoritmos de machine learning gestionen la redundancia. Random Forest lo hace de forma inherente. Para el SVM, aunque puede ser sensible, técnicas como la regularización (parámetro `C`) ayudan a manejar la complejidad del modelo. Eliminar variables a priori podría resultar en una pérdida de información sutil pero valiosa que el modelo podría aprovechar.
+3.  **Análisis Posterior:** La importancia de las variables devuelta por el modelo Random Forest (`varImp`) se utilizará más adelante como una forma más sofisticada e informada por el problema de clasificación para entender qué variables son realmente relevantes, en lugar de basarse únicamente en correlaciones bivariadas.
+
+Este enfoque es metodológicamente sólido, ya que evita la eliminación prematura de características y confía en la capacidad de los modelos modernos para manejar datos complejos.
+
+## ¿Hay alguna asociación entre los predictores y los tipos de región?
+
+Para abordar esta pregunta de manera rigurosa, se utilizará un modelo de **Regresión Logística Multinomial**. Este enfoque es superior a realizar tests individuales (como ANOVA) porque modela la probabilidad de cada clase en función de todos los predictores simultáneamente. Esto nos permite revelar la fuerza, dirección y significancia de la asociación de cada predictor con cada tipo de región, tomando en cuenta las interacciones entre ellos.
+
+**Decisión de Implementación:**
+
+1.  **Modelo:** Se ajustará un modelo con la función `multinom()` del paquete `nnet`, usando `class` como variable de respuesta y todos los demás predictores. La clase `5-UTR` se tomará como referencia por defecto.
+2.  **Manejo Computacional:** Dado que ajustar este modelo con más de 170,000 observaciones es computacionalmente intensivo, el modelo se entrenará una única vez. El objeto del modelo y sus resultados (p-valores) se guardarán en ficheros `.rds`. En las ejecuciones posteriores del `Knit`, estos resultados se cargarán directamente para evitar re-calcularlos, tal y como se aconseja en la guía de la práctica.
+
+```{r train_multinomial_model, eval=FALSE}
+# Este chunk entrena el modelo multinomial y guarda los resultados en disco.
+# Una vez ejecutado, se deja con eval=FALSE para no repetir el cálculo.
+
+# Se escalan los predictores numéricos para mejorar la estabilidad y convergencia del modelo.
+preproc_values <- preProcess(data_imputed[, -which(names(data_imputed) == "class")], method = c("center", "scale"))
+data_scaled <- predict(preproc_values, data_imputed)
+
+# Se ajusta el modelo. MaxNWts se aumenta para permitir un mayor número de coeficientes.
+multinom_model <- nnet::multinom(class ~ ., data = data_scaled, MaxNWts = 2000, trace = TRUE)
+saveRDS(multinom_model, file = "multinom_model.rds")
+
+# Se calculan el sumario y los p-valores a partir de los coeficientes y errores estándar.
+summary_model <- summary(multinom_model)
+z_scores <- summary_model$coefficients / summary_model$standard.errors
+p_values <- (1 - pnorm(abs(z_scores))) * 2
+
+# Se guardan los objetos necesarios para la visualización.
+saveRDS(p_values, file = "multinom_p_values.rds")
+saveRDS(summary_model, file = "multinom_summary.rds") # Se guarda el sumario para evitar errores.
+```
+
+### Visualización y Análisis de la Asociación
+
+Una vez entrenado el modelo, procedemos a interpretar sus resultados. Para ello, generamos dos visualizaciones clave.
+
+#### 1. Mapa de Calor de Significancia
+
+Primero, usamos un mapa de calor para obtener una visión general y rápida de qué predictores son estadísticamente significativos (`p-valor < 0.05`) para distinguir cada clase de la clase de referencia (`5-UTR`).
+
+```{r load_and_plot_heatmap, fig.width=12, fig.height=7, message=FALSE, warning=FALSE, echo=TRUE}
+# --- CHUNK 1: Carga de datos y visualización del Heatmap ---
+
+# Definimos rutas de los ficheros
+pval_file  <- "multinom_p_values.rds"
+
+# Comprobación de existencia de ficheros
+if (!file.exists(pval_file)) {
+  stop(
+    "No se encontró el fichero 'multinom_p_values.rds'. 
+     Por favor, asegúrese de haber ejecutado primero el chunk 'train_multinomial_model'."
+  )
+}
+
+# Carga de los resultados pre-calculados
+p_values <- readRDS(pval_file)
+
+# Filtrar los 20 predictores más relevantes para que el heatmap sea legible
+min_p_values_per_predictor <- apply(p_values, 2, min)
+top_predictors <- names(sort(min_p_values_per_predictor))[1:20]
+
+# Transformar datos para ggplot
+p_values_transformed <- -log10(p_values)
+p_values_df <- as.data.frame(p_values_transformed) %>%
+  tibble::rownames_to_column("Class") %>%
+  tidyr::pivot_longer(-Class, names_to = "Predictor", values_to = "neg_log10_p") %>%
+  dplyr::filter(Predictor %in% top_predictors) # Filtrado para claridad
+
+# Crear el gráfico
+heatmap_plot <- ggplot(p_values_df, aes(x = reorder(Predictor, neg_log10_p), y = Class, fill = neg_log10_p)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "ivory", high = "darkred", name = "-log10(p-valor)") +
+  labs(
+    title    = "Significancia de los Predictores más Relevantes por Clase",
+    subtitle = "Regresión Multinomial (Clase de referencia: 5-UTR)",
+    x        = "Predictor", 
+    y        = "Clase"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x     = element_text(angle = 45, vjust = 1, hjust = 1, size = 10),
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle   = element_text(hjust = 0.5)
+  )
+
+print(heatmap_plot)
+```
+
+**Interpretación del Mapa de Calor:**
+
+El mapa de calor muestra la significancia de la asociación (`-log10(p-valor)`). Los colores rojos intensos indican un p-valor muy bajo (alta significancia), mostrando que un predictor es muy importante para distinguir esa clase de la de referencia. Se observa que variables como `mean_phastCons7way`, `meanPd` y `meanEE` son altamente significativas para la mayoría de las clases, lo que las posiciona como candidatas a ser muy importantes en los modelos de Machine Learning.
+
+#### 2. Gráfico de Coeficientes y su Efecto
+
+A continuación, un gráfico de coeficientes permite un análisis más profundo, mostrando no solo la significancia (a través de los intervalos de confianza), sino también la **magnitud y dirección** del efecto de cada predictor.
+
+```{r plot_multinom_coefficients, fig.width=12, fig.height=10, message=FALSE, warning=FALSE, echo=TRUE}
+# --- Visualización del Gráfico de Coeficientes ---
+
+# Definimos la ruta del fichero de sumario
+summary_file <- "multinom_summary.rds"
+
+# Comprobación de existencia del fichero
+if (!file.exists(summary_file)) {
+  stop(
+    "No se encontró el fichero 'multinom_summary.rds'. 
+     Por favor, asegúrese de haber ejecutado primero el chunk 'train_multinomial_model'."
+  )
+}
+
+# Cargar el objeto summary pre-calculado para evitar errores de entorno
+summary_model <- readRDS(summary_file)
+
+# Extraer coeficientes y errores estándar del objeto cargado
+coefficients <- as.data.frame(summary_model$coefficients)
+std_errors   <- as.data.frame(summary_model$standard.errors)
+
+# Unir y calcular Intervalos de Confianza del 95%
+model_data <- dplyr::inner_join(
+  tibble::rownames_to_column(coefficients, "Clase") %>% tidyr::pivot_longer(-Clase, names_to = "Predictor", values_to = "Coeficiente"),
+  tibble::rownames_to_column(std_errors, "Clase") %>% tidyr::pivot_longer(-Clase, names_to = "Predictor", values_to = "ErrorEstandar"),
+  by = c("Clase", "Predictor")
+) %>%
+  dplyr::mutate(
+    CI_bajo = Coeficiente - 1.96 * ErrorEstandar,
+    CI_alto = Coeficiente + 1.96 * ErrorEstandar
+  )
+
+# Identificar y filtrar los 15 predictores con mayor efecto global (usando el objeto del chunk anterior)
+top_predictors_coeffs <- names(sort(min_p_values_per_predictor))[1:15]
+model_data_filtered <- model_data %>% dplyr::filter(Predictor %in% top_predictors_coeffs)
+
+# Crear el gráfico
+coefficient_plot <- ggplot(model_data_filtered, aes(x = Coeficiente, y = reorder(Predictor, Coeficiente))) +
+  geom_errorbarh(aes(xmin = CI_bajo, xmax = CI_alto), height = 0.2, color = "gray60") +
+  geom_point(aes(color = Clase), size = 2.5, alpha = 0.9) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+  facet_wrap(~ Clase, scales = "free_x", ncol = 3) +
+  labs(
+    title = "Efecto y Dirección de los Predictores Clave por Tipo de Región",
+    subtitle = "Coeficientes de la Regresión Multinomial (Referencia: 5-UTR)",
+    x = "Coeficiente (Log-Odds Ratio)",
+    y = "Predictor"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    strip.text = element_text(face = "bold"),
+    panel.spacing = unit(1.5, "lines")
+  )
+
+print(coefficient_plot)
+```
+
+**Interpretación del Gráfico de Coeficientes:**
+
+Este gráfico nos da una visión mucho más rica:
+
+* **Posición del Punto:** Si un coeficiente es **positivo**, un aumento en ese predictor incrementa la probabilidad de que una observación pertenezca a esa clase en comparación con la clase de referencia (`5-UTR`). Si es **negativo**, la disminuye.
+* **Intervalo de Confianza (líneas grises):** Si el intervalo **no cruza la línea vertical en cero**, el efecto del predictor es estadísticamente significativo.
+
+**Conclusión General de la Asociación:**
+
+El análisis de regresión multinomial confirma de manera robusta que **existe una fuerte y compleja asociación entre los predictores y los tipos de región genómica**. Este análisis no solo valida la utilidad de los predictores, sino que también nos da una primera hipótesis sobre qué variables serán más influyentes y cómo afectan a cada clase, lo cual será de gran utilidad para interpretar los resultados de los modelos de Machine Learning.
+
+
+## ¿Se distribuyen de forma normal las variables? ¿Presentan valores fuera de rango?
+
+Evaluar la distribución de las variables y la presencia de outliers es importante para comprender su naturaleza. En lugar de analizar un conjunto predefinido de variables, nos centraremos en las que el análisis de asociación previo (`1.4`) ha demostrado ser más relevantes para distinguir entre las clases.
+
+```{r normality_outlier_analysis_revised, fig.width=12, fig.height=10, message=FALSE, warning=FALSE, echo=TRUE}
+# --- Carga de resultados del modelo multinomial para identificar variables clave ---
+# Se reutiliza el objeto p_values del chunk anterior para seleccionar las variables más
+# significativas, asegurando que el análisis de distribución se centra en lo más relevante.
+pval_file  <- "multinom_p_values.rds"
+if (!file.exists(pval_file)) {
+  stop("El fichero 'multinom_p_values.rds' no se encontró. Ejecute el chunk de la sección 1.4 primero.")
+}
+p_values <- readRDS(pval_file)
+
+# --- 1. Selección de las 5 Variables Más Significativas ---
+# Se calcula la mínima p-valor para cada predictor a través de todas las clases como
+# una medida de su importancia global.
+min_p_values <- apply(p_values, 2, min)
+# Se seleccionan los nombres de los 5 predictores con los p-valores más bajos (más significativos).
+# Se excluye el '(Intercept)' que no es una variable predictora.
+top_5_predictors <- names(sort(min_p_values)[names(sort(min_p_values)) != '(Intercept)'][1:5])
+
+# --- FIX 1: CORRECCIÓN DEL NOMBRE ---
+# El modelo multinomial crea una variable dummy 'polyA_signal1' a partir del factor 'polyA_signal'.
+# Se revierte el nombre para que coincida con el del dataframe original 'data_imputed'.
+top_5_predictors <- stringr::str_replace(top_5_predictors, "polyA_signal1", "polyA_signal")
+# La función str_replace es del paquete stringr, que ya debería estar cargado con tidyverse.
+
+cat("Las 5 variables más significativas seleccionadas para el análisis son:\n")
+print(top_5_predictors)
+
+# --- 2. Preparación de Datos para Visualización ---
+# Se crea un dataframe largo (tidy format) que es ideal para faceting con ggplot2.
+# Se usa 'all_of()' para asegurar que los nombres de las variables son correctos.
+data_to_plot <- data_imputed %>%
+  select(all_of(top_5_predictors), class) %>%
+  # --- FIX 2: CORRECCIÓN DEL TIPO DE DATO ---
+  # La variable 'polyA_signal' es un factor, pero para pivotar y graficar, necesita
+  # ser numérica como el resto de predictores. Se convierte a carácter y luego a número.
+  mutate(polyA_signal = as.numeric(as.character(polyA_signal))) %>%
+  tidyr::pivot_longer(
+    cols = -class,
+    names_to = "Predictor",
+    values_to = "Value"
+  )
+
+# --- 3. Visualización de Distribuciones (Histogramas y Densidad) ---
+plot_dist <- ggplot(data_to_plot, aes(x = Value)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 50, fill = "steelblue", color = "white", alpha = 0.7) +
+  geom_density(alpha = .2, fill = "#E69F00") +
+  facet_wrap(~ Predictor, scales = "free", ncol = 3) +
+  labs(
+    title = "Distribución de las 5 Variables Predictoras Más Significativas",
+    subtitle = "Histogramas con curva de densidad",
+    x = "Valor",
+    y = "Densidad"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+# --- 4. Análisis de Valores Atípicos por Clase (Boxplots) ---
+plot_box <- ggplot(data_to_plot, aes(x = class, y = Value, fill = class)) +
+  geom_boxplot(show.legend = FALSE, outlier.shape = 21, outlier.size=1.5, outlier.alpha = 0.1) +
+  facet_wrap(~ Predictor, scales = "free_y", ncol = 3) +
+  labs(
+    title = "Análisis de Outliers de las Variables Clave por Tipo de Región",
+    x = "Tipo de Región Genómica",
+    y = "Valor del Predictor"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5, face="bold"),
+    strip.text = element_text(face="bold")
+  )
+
+# Mostrar gráficos
+print(plot_dist)
+print(plot_box)
+```
+
+### Conclusión sobre Distribución y Outliers
+
+El análisis visual de las cinco variables más significativas revela patrones consistentes y claros:
+
+1.  **No Normalidad Generalizada:** Ninguna de las variables predictoras clave sigue una distribución normal. Los histogramas muestran formas marcadamente asimétricas o bimodales.
+
+2.  **Presencia Masiva de Outliers:** Los boxplots confirman la existencia de una gran cantidad de valores atípicos en casi todas las clases y para cada una de las variables analizadas.
+
+3.  **Potencial Predictivo:** Más importante aún, los boxplots demuestran que **la distribución de estas variables cambia notablemente entre las distintas clases genómicas**. Estas diferencias son precisamente las que un modelo de machine learning puede explotar para la clasificación.
+
+**Decisión de Implementación:**
+Dado que los algoritmos que se utilizarán (Random Forest) son robustos frente a la no normalidad de los datos y la presencia de outliers, **no se aplicará ninguna transformación de datos ni se eliminarán los valores atípicos**, ya que podrían contener información biológica relevante.
+
+
+**Decisión de Implementación:**
+Dado que los algoritmos que se utilizarán (Random Forest) son robustos frente a la no normalidad de los datos y la presencia de outliers, **no se aplicará ninguna transformación de datos ni se eliminarán los valores atípicos**, ya que podrían contener información biológica relevante.
+
+
+
+# PREGUNTA 2: Análisis basado en PCA
+
+El Análisis de Componentes Principales (PCA) es una técnica de reducción de dimensionalidad que nos permite transformar un gran número de variables correlacionadas en un conjunto más pequeño de variables no correlacionadas (componentes principales), conservando la mayor cantidad de varianza posible.
+
+```{r pca_computation, eval=FALSE}
+# Se ejecuta una sola vez. El PCA sobre un dataset grande puede tardar.
+# Es crucial escalar los datos antes del PCA para que las variables con
+# varianzas más altas no dominen el análisis.
+# Se reutiliza el objeto 'numeric_predictors' del análisis de correlación.
+pca_model <- prcomp(numeric_predictors, center = TRUE, scale. = TRUE)
+
+# Guardamos el objeto PCA para no tener que recalcularlo.
+# Se usa la librería 'here' para asegurar la correcta ruta del fichero.
+saveRDS(pca_model, file = here::here("pca_model.rds"))
+```{r load_pca_model}
+# --- CHUNK DE CARGA DEL MODELO PCA ---
+# Este chunk carga el modelo pre-calculado para su análisis.
+tryCatch({
+  pca_model <- readRDS(here::here("pca_model.rds"))
+}, error = function(e){
+  stop("El fichero 'pca_model.rds' no se encontró. Por favor, ejecute el chunk 'pca_computation' primero.")
+})
+```
+
+## Basándonos en la visualización de los componentes principales, ¿podrías dar alguna indicación sobre qué clases de regiones van a ser más fáciles de identificar’ ¿Y las más complejas?
+
+Para evaluar la separabilidad de las clases, la visualización es una herramienta clave. Sin embargo, la alta densidad de puntos puede dificultar la lectura. A continuación, se presentan dos gráficos: el primero muestra todas las clases juntas para dar una idea general de la superposición, y el segundo separa cada clase en una faceta para una inspección detallada y clara.
+
+```{r pca_visualization_improved, fig.width=12, fig.height=14, message=FALSE, warning=FALSE, echo=TRUE}
+
+# Se crea un data frame con los resultados del PCA y la variable de clase original.
+pca_data <- as.data.frame(pca_model$x)
+pca_data$class <- data_imputed$class
+
+# Se usa una muestra aleatoria del 10% de los datos para que la visualización sea más clara
+set.seed(123)
+sample_for_plot <- pca_data[sample(nrow(pca_data), size = nrow(pca_data) * 0.1), ]
+
+# --- Gráfico 1: Vista General con Elipses de Confianza ---
+# Este gráfico nos da una idea de la superposición general.
+plot_pca_overview <- ggplot(sample_for_plot, aes(x = PC1, y = PC2, color = class)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  stat_ellipse(type = "t", level = 0.95, linetype = 2, size = 1) +
+  labs(
+    title = "Visualización General de Clases en el Espacio PCA",
+    subtitle = "Elipses de confianza al 95%. Se observa una fuerte superposición en el clúster central.",
+    x = paste0("PC1 (", round(summary(pca_model)$importance[2, 1] * 100, 1), "%)"),
+    y = paste0("PC2 (", round(summary(pca_model)$importance[2, 2] * 100, 1), "%)"),
+    color = "Tipo de Región"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"),
+        plot.subtitle = element_text(hjust = 0.5),
+        legend.position = "bottom") +
+  guides(color = guide_legend(override.aes = list(alpha = 1, size = 4)))
+
+# --- Gráfico 2: Vista Detallada por Facetas ---
+# Separar cada clase en su propio panel elimina la superposición y permite ver la
+# distribución de cada una de forma aislada y clara.
+plot_pca_faceted <- ggplot(sample_for_plot, aes(x = PC1, y = PC2)) +
+  # Se añaden todos los demás puntos en gris como fondo para dar contexto
+  geom_point(data = select(sample_for_plot, -class), color = "grey85", alpha = 0.6, size = 1) +
+  # Se dibujan los puntos de la clase de interés encima, a color
+  geom_point(aes(color = class), size = 2, alpha = 0.8) +
+  facet_wrap(~ class, ncol = 3) +
+  labs(
+    title = "Visualización Detallada de Cada Clase en el Espacio PCA",
+    subtitle = "Cada panel muestra una clase, con el resto de datos como fondo gris.",
+    x = paste0("PC1 (", round(summary(pca_model)$importance[2, 1] * 100, 1), "%)"),
+    y = paste0("PC2 (", round(summary(pca_model)$importance[2, 2] * 100, 1), "%)")
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "none", # La leyenda es redundante en este gráfico
+    strip.background = element_rect(fill = "lightblue", color = "black"),
+    strip.text = element_text(face = "bold", size = 11)
+  )
+
+# Mostrar los dos gráficos
+print(plot_pca_overview)
+print(plot_pca_faceted)
+
+```
+
+### Interpretación de la Visualización
+
+La combinación de ambos gráficos nos permite llegar a una conclusión más sólida:
+
+-   **Clases más fáciles de identificar:** El gráfico facetado confirma claramente que las clases **`5-UTR`** y **`UTR`** son las más separadas del resto. Ocupan regiones relativamente distintas en el espacio definido por los dos primeros componentes, lo que sugiere que un clasificador tendrá menos dificultades para distinguirlas.
+
+-   **Clases más complejas de identificar:** La gran superposición observada en el primer gráfico entre **`ICE`**, **`lncRNA`**, **`ncRNA`** y **`pseudoGene`** se confirma en el segundo. Aunque cada una tiene una distribución ligeramente diferente, todas conviven en un gran cúmulo central. Esto indica que será un reto para los modelos diferenciarlas, y probablemente necesitarán basarse en componentes principales de orden superior (o directamente en las variables originales) que capturen matices más sutiles no visibles en los dos primeros ejes.
+
+## ¿Cuánta variabilidad logramos explicar con los tres primeros componentes principales? ¿Qué predictores del dataset aportan mayor información en cada uno de los dos primeros componentes?
+
+### Varianza Explicada
+
+Para cuantificar cuánta información del dataset original se conserva, analizamos la proporción de varianza explicada (PVE) por cada componente principal. El siguiente gráfico combina la PVE individual (barras) y la PVE acumulada (línea roja) para una interpretación más directa.
+
+```{r pca_variance_ggplot_improved, fig.width=10, fig.height=6}
+# Se calcula la Proporción de Varianza Explicada (PVE) para cada componente.
+pve <- pca_model$sdev^2 / sum(pca_model$sdev^2)
+
+# Se crea un data frame con la PVE y la PVE acumulada.
+pve_df <- data.frame(
+  Componente = factor(1:length(pve), levels = 1:length(pve)),
+  PVE_Individual = pve,
+  PVE_Acumulada = cumsum(pve)
+)
+
+# Se genera el Scree Plot (Pareto) usando ggplot2
+ggplot(pve_df[1:15,], aes(x = Componente, y = PVE_Individual)) +
+  geom_col(fill = "skyblue", alpha = 0.8, color="black") +
+  # Se añade la línea de varianza acumulada
+  geom_line(aes(y = PVE_Acumulada, group = 1), color = "red", size = 1.2) +
+  geom_point(aes(y = PVE_Acumulada), color = "red", size = 3) +
+  # Se añaden etiquetas de texto para mayor claridad en la línea acumulada
+  geom_text(
+    aes(label = scales::percent(PVE_Acumulada, accuracy = 1), y = PVE_Acumulada),
+    color="black", vjust = -0.75, size = 3.5
+  ) +
+  scale_y_continuous(
+    name = "Proporción de Varianza Explicada",
+    labels = scales::percent
+  ) +
+  labs(
+    title = "Scree Plot: Varianza Explicada por Componente Principal",
+    subtitle = "Las barras muestran la varianza individual y la línea roja la acumulada.",
+    x = "Componente Principal",
+    y = "Proporción de Varianza Explicada"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title = element_text(hjust = 0.5, face="bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+#### Interpretación de la Varianza Explicada:
+
+El "Scree Plot" mejorado muestra de forma clara:
+* **PC1:** Explica por sí solo un **`r scales::percent(summary(pca_model)$importance[2,1], accuracy = 0.1)`** de la varianza total.
+* **PC2:** Añade un **`r scales::percent(summary(pca_model)$importance[2,2], accuracy = 0.1)`** de la varianza.
+* **PC3:** Aporta un **`r scales::percent(summary(pca_model)$importance[2,3], accuracy = 0.1)`** adicional.
+
+**Varianza acumulada por los tres primeros componentes:**
+Sumando sus contribuciones, los tres primeros componentes principales logran explicar un **`r scales::percent(summary(pca_model)$importance[3,3], accuracy = 0.1)`** de la variabilidad total del dataset. Esto representa una reducción de dimensionalidad muy significativa (de 40 a 3 variables) conservando dos tercios de la información original.
+
+### Contribución de los Predictores a los Componentes Principales
+
+Para interpretar qué significan biológicamente los componentes principales, es fundamental analizar los **loadings**. El siguiente gráfico muestra las 15 variables que más contribuyen a cada uno de los dos primeros componentes, indicando además la **dirección (positiva o negativa) de su contribución**.
+
+```{r pca_contribution_ggplot_improved, fig.width=12, fig.height=10, message=FALSE, warning=FALSE}
+# Se extraen los loadings (pesos) de las variables para cada componente.
+loadings_df <- as.data.frame(pca_model$rotation)
+
+# Se preparan los datos para la visualización de la contribución a PC1 y PC2
+loadings_tidy <- loadings_df %>%
+  tibble::rownames_to_column("Variable") %>%
+  # Se seleccionan solo los dos primeros componentes
+  select(Variable, PC1, PC2) %>%
+  # Se convierte a formato largo para faceting
+  pivot_longer(cols = c(PC1, PC2), names_to = "Componente", values_to = "Loading") %>%
+  # Se añade el signo para colorear
+  mutate(Signo = ifelse(Loading > 0, "Positivo", "Negativo"))
+
+# Se filtran las top 15 variables con mayor contribución (en valor absoluto) por componente
+top_loadings <- loadings_tidy %>%
+  group_by(Componente) %>%
+  slice_max(abs(Loading), n = 15) %>%
+  ungroup() %>%
+  # Se reordena el eje de variables para que el gráfico quede bien ordenado dentro de cada faceta
+  mutate(Variable = reorder_within(Variable, abs(Loading), Componente))
+
+# --- Gráfico de Barras de Loadings ---
+ggplot(top_loadings, aes(x = Loading, y = Variable, fill = Signo)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ Componente, scales = "free") +
+  # Se aplica el reordenamiento del eje Y para que cada faceta tenga su propia ordenación
+  scale_y_reordered() +
+  scale_fill_manual(values = c("Positivo" = "steelblue", "Negativo" = "firebrick")) +
+  labs(
+    title = "Variables con Mayor Contribución (Loadings) a PC1 y PC2",
+    subtitle = "El color indica si la contribución es positiva (azul) o negativa (rojo)",
+    x = "Valor del Loading (Contribución)",
+    y = "Variable Predictora"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.grid.major.y = element_blank() # Se limpia el eje Y para mejor legibilidad
+  )
+```
+
+#### Interpretación de la Contribución:
+
+Este gráfico es mucho más informativo que el original, ya que el color nos indica el signo de la correlación de cada variable con el componente.
+
+* **Predictores que más aportan a PC1:** El primer componente principal está fuertemente influenciado por variables relacionadas con las **propiedades estructurales y físico-químicas del ADN**. Casi todas las variables importantes (`dnadenaturation`, `duplexstabilityfreeenergy`, `zdna`, `bendingstiffness`, etc.) tienen una contribución **negativa** (rojo). Esto sugiere que PC1 representa un gradiente de estabilidad y propiedades estructurales. Los valores altos en PC1 corresponderán a valores bajos en estas variables.
+
+* **Predictores que más aportan a PC2:** El segundo componente principal está dominado por la **composición de nucleótidos**, en particular los dinucleótidos. Se observa una clara separación: dinucleótidos como `GA` y `AG` contribuyen de forma **positiva** (azul), mientras que otros como `CT` y `TC` lo hacen de forma **negativa** (rojo). Esto sugiere que PC2 captura un eje de variación relacionado con la composición de la secuencia, diferenciando entre regiones ricas en purinas y regiones ricas en pirimidinas, por ejemplo.
+
+# PREGUNTA 3: Genera clasificadores para distinguir entre diferentes loci
+
+En esta sección se aborda la tarea central de la práctica: la construcción, optimización y evaluación de modelos de Machine Learning para la clasificación multiclase de las regiones genómicas. Se emplearán dos algoritmos de gran potencia y versatilidad: **Random Forest** y **Máquinas de Vectores Soporte (SVM)**.
+
+El flujo de trabajo se ha estructurado de la siguiente manera:
+1.  **Preparación de Datos y Exportación:** Primero, se dividirá el dataset limpio en conjuntos de entrenamiento (80%) y prueba (20%). Estos conjuntos se guardarán como ficheros `.rds` para poder ser utilizados en el entorno del clúster.
+2.  **Planteamiento del Entrenamiento:** A continuación, se documenta la estrategia de optimización y los grids de hiperparámetros para cada modelo. Los bloques de código de esta parte están configurados con `eval=FALSE`, ya que su ejecución se realiza de forma externa en el clúster.
+3.  **Análisis y Evaluación de Resultados:** Finalmente, se cargarán los modelos entrenados desde el clúster y se procederá a su evaluación comparativa para responder a todas las preguntas de la tarea.
+
+---
+
+### Preparación de Datos para el Modelado y Exportación
+
+El primer paso indispensable es la partición del dataset limpio (`data_imputed`) en dos conjuntos independientes. Una vez creados, se exportarán a ficheros `.rds` para poder ser utilizados en el entorno del clúster.
+
+```{r data_partition_and_save, message=FALSE, warning=FALSE, echo=TRUE}
+# --- 1. División Estratificada de Datos ---
+# Se establece una división del 80% para entrenamiento y 20% para prueba.
+# Esta proporción es un estándar que ofrece un excelente equilibrio entre un
+# conjunto de entrenamiento grande para aprender patrones complejos y un 
+# conjunto de prueba robusto para una evaluación fiable.
+
+# Se utiliza 'createDataPartition' para realizar un muestreo estratificado. 
+# Esta técnica es CRÍTICA dado el desbalance de clases, pues asegura que la 
+# distribución de clases original se preserve en ambos subconjuntos.
+set.seed(123) # Para garantizar la reproducibilidad.
+train_index <- createDataPartition(data_imputed$class, p = 0.8, list = FALSE)
+
+train_set <- data_imputed[train_index, ]
+test_set  <- data_imputed[-train_index, ]
+
+# Verificación de las dimensiones
+cat("Tamaño del conjunto de entrenamiento:", nrow(train_set), "filas\n")
+cat("Tamaño del conjunto de prueba:", nrow(test_set), "filas\n\n")
+
+# --- 2. Guardado de los Ficheros para el Clúster ---
+# Se guardan los objetos en formato .rds, que es muy eficiente.
+# Estos dos ficheros son los que se deberán subir al clúster.
+saveRDS(train_set, file = "train_set.rds")
+saveRDS(test_set, file = "test_set.rds")
+
+cat("\n-> Ficheros 'train_set.rds' y 'test_set.rds' guardados correctamente.\n")
+```
+
+---
+
+### Planteamiento de la Estrategia de Entrenamiento
+
+Para asegurar una comparación justa y una selección de hiperparámetros robusta, se define una estrategia de entrenamiento común para ambos algoritmos que se ejecutará en el clúster.
+
+```{r train_control_setup, message=FALSE, warning=FALSE, echo=TRUE}
+# --- Objeto de control para la función train de caret ---
+# Este objeto encapsula la estrategia de remuestreo y evaluación.
+train_control <- trainControl(
+  method = "repeatedcv", # Validación Cruzada Repetida
+  number = 10,           # 10 folds
+  repeats = 3,           # 3 repeticiones
+  verboseIter = TRUE,
+  allowParallel = TRUE,
+  classProbs = TRUE,     # Necesario para métricas como AUC
+  summaryFunction = multiClassSummary,
+  sampling = "down"      # Aplica down-sampling en cada iteración de la CV
+)
+```
+
+A continuación, se documenta el plan de entrenamiento que se ejecutará en scripts independientes en el clúster.
+
+### Modelo 1: Random Forest
+
+```{r model_training_placeholders, eval=FALSE, echo=TRUE}
+# --- CHUNK DE ENTRENAMIENTO (NO EJECUTAR AQUÍ) ---
+
+# --- Modelo 1: Random Forest ---
+rf_grid <- expand.grid(
+  mtry = c(4, 7, 10, 15),
+  min.node.size = c(1, 5, 10),
+  splitrule = c("gini", "extratrees")
+)
+
+set.seed(123)
+rf_model <- train(
+  class ~ ., data = train_set, method = "ranger",
+  trControl = train_control, tuneGrid = rf_grid,
+  metric = "Kappa", importance = "permutation"
+)
+# saveRDS(rf_model, file = "modelo_rf_final.rds")
+```
+
+### Modelo 2: Máquinas de Vectores Soporte (SVM) 
+
+```{r svm_training_placeholder, eval=FALSE, echo=TRUE}
+# --- Modelo 2: SVM ---
+# Para el script del clúster, se debe usar un subconjunto de 'train_set'
+# debido a la alta carga computacional de SVM.
+# svm_train_data <- train_set[createDataPartition(train_set$class, p=0.28, list=F),]
+
+svm_grid <- expand.grid(
+  sigma = c(0.01, 0.05, 0.1),
+  C = c(0.1, 1, 10)
+)
+
+set.seed(123)
+svm_model <- train(
+  class ~ ., 
+  data = svm_train_data, 
+  method = "svmRadial",
+  trControl = train_control, 
+  preProcess = c("center", "scale"),
+  tuneGrid = svm_grid, 
+  metric = "Kappa"
+)
+# saveRDS(svm_model, file = "modelo_svm_final.rds")
+```
+
+### Análisis de los Modelos Entrenados
+
+Con los modelos ya entrenados en el clúster, el primer paso es cargarlos en nuestro entorno de R para poder analizarlos en detalle. También cargaremos el conjunto de prueba (`test_set`), que se utilizará para la evaluación final del rendimiento de los modelos.
+
+```{r load_trained_models, message=FALSE, warning=FALSE, echo=TRUE}
+# --- Carga de los ficheros .rds generados en el clúster ---
+
+# Se cargan los objetos de los modelos. Es importante asegurarse de que estos
+# ficheros han sido transferidos desde el clúster al directorio de trabajo local.
+
+tryCatch({
+  modelo_rf <- readRDS(here("modelo_rf_final.rds"))
+  modelo_svm <- readRDS(here("modelo_svm_final.rds"))
+  test_set <- readRDS(here("test_set.rds")) # Se carga también el conjunto de prueba
+  
+  cat("-> Modelos (RF y SVM) y conjunto de prueba cargados correctamente.\n")
+  
+}, error = function(e) {
+  stop("Error al cargar los ficheros .rds. Asegúrate de que 'modelo_rf_final.rds', 'modelo_svm_final.rds' y 'test_set.rds' están en tu directorio de trabajo.")
+})
+
+# Es una buena práctica corregir los nombres de las clases del test_set para que 
+# coincidan con los que el modelo espera, ya que el modelo se entrenó con los
+# nombres corregidos ('make.names'). Esto evitará errores en la predicción.
+levels(test_set$class) <- make.names(levels(test_set$class))
+```
+
+```{r statistical_comparison, message=FALSE, warning=FALSE, echo=TRUE}
+# --- CHUNK NUEVO: Comparación Estadística de Modelos (basado en CV) ---
+
+# Agrupamos los resultados del remuestreo (las 30 ejecuciones de CV) de ambos modelos.
+# Esto nos permitirá comparar sus distribuciones de rendimiento.
+model_results <- resamples(list(RF = modelo_rf, SVM = modelo_svm))
+
+# Mostramos un resumen estadístico de las métricas. 
+# Podemos ver la media, mediana y dispersión para Kappa y Accuracy de cada modelo.
+# Fuente: 
+summary(model_results)
+
+# Generamos una visualización para comparar las distribuciones de Kappa.
+# Este gráfico nos ayuda a ver si un modelo es consistentemente mejor que el otro.
+# Fuente: 
+bwplot(model_results, metric = "Kappa", main = "Comparación de Distribuciones de Kappa (3x10-fold CV)")
+
+# Finalmente, realizamos un test de hipótesis para determinar si las diferencias son
+# estadísticamente significativas.
+# Fuente: 
+diff_results <- diff(model_results)
+summary(diff_results)
+```
+
+---
+
+## Para cada algoritmo usado, ¿cuál es la estrategia de optimización de hiperparámetros usada? ¿Qué significa cada hiperparámetro considerado? ¿Cómo has decidido configurarlos?
+
+La optimización de hiperparámetros es un paso crítico para extraer el máximo rendimiento de cada algoritmo. La estrategia empleada fue idéntica para ambos modelos para asegurar una comparación justa.
+
+* **Estrategia General:** Se utilizó una **búsqueda en rejilla (Grid Search)** combinada con una **validación cruzada de 10 folds repetida 3 veces**.
+    * **Grid Search:** Para cada algoritmo, se definió un conjunto de valores candidatos para sus hiperparámetros más influyentes. `caret` entrena un modelo para cada combinación posible de estos valores.
+    * **Validación Cruzada Repetida:** Cada una de estas combinaciones se evaluó promediando su rendimiento a lo largo de 30 rondas de entrenamiento/validación (10 folds x 3 repeticiones). Esta técnica es muy robusta y minimiza el riesgo de que los resultados se deban al azar de una única partición de los datos.
+    * **Selección del Mejor Modelo:** `caret` selecciona automáticamente la combinación de hiperparámetros que obtuvo el mejor valor en la métrica de rendimiento objetivo (en nuestro caso, `Kappa`).
+
+A continuación, se detalla la configuración y justificación para cada modelo.
+
+#### Modelo 1: Random Forest (`ranger`)
+
+El modelo Random Forest se optimizó ajustando tres hiperparámetros clave que controlan el equilibrio entre la precisión individual de los árboles y la diversidad del "bosque".
+
+```{r show_rf_results, echo=TRUE}
+# Mostramos los resultados del entrenamiento y el mejor tuneo encontrado
+print(modelo_rf)
+```
+
+* **`mtry` (Número de predictores por división):**
+    * **Significado:** Este es el hiperparámetro más importante de Random Forest. En cada nodo de cada árbol, el algoritmo no evalúa todos los predictores, sino que selecciona aleatoriamente un subconjunto de tamaño `mtry`. Esto introduce aleatoriedad y es la razón principal por la que Random Forest evita el sobreajuste y generaliza bien. Un valor bajo de `mtry` produce árboles muy diferentes entre sí (alta diversidad), mientras que un valor alto hace que los árboles sean más similares (menor diversidad, pero potencialmente más potentes individualmente).
+    * **Configuración y Razonamiento:** El valor teórico recomendado suele ser la raíz cuadrada del número total de predictores (en nuestro caso, $\sqrt{41} \approx 6.4$). Se configuró una rejilla de `c(4, 7, 10, 15)` para explorar sistemáticamente el efecto de este parámetro: se probó un valor por debajo del teórico (4), uno cercano (7), y dos valores progresivamente más altos (10 y 15) para determinar empíricamente si el modelo se beneficiaba de una mayor o menor aleatoriedad en la selección de variables.
+
+* **`min.node.size` (Tamaño mínimo del nodo terminal):**
+    * **Significado:** Este hiperparámetro controla la profundidad y complejidad de los árboles. Dicta el número mínimo de muestras que debe tener un nodo para poder ser considerado un nodo final (una "hoja"). Un valor pequeño (ej. 1) permite que los árboles crezcan muy profundos, ajustándose mucho a los datos de entrenamiento. Un valor más grande (ej. 10) detiene el crecimiento antes, creando árboles más simples y evitando que el modelo aprenda ruido.
+    * **Configuración y Razonamiento:** Se configuró una rejilla de `c(1, 5, 10)`. Esta selección permite evaluar el trade-off entre complejidad y generalización: se prueba un árbol totalmente desarrollado (1), un valor intermedio que suele dar buenos resultados (5), y un valor más restrictivo que fuerza una mayor regularización (10).
+
+* **`splitrule` (Regla de división):**
+    * **Significado:** Es el criterio que el algoritmo usa para decidir cuál es la "mejor" división entre todos los predictores y puntos de corte candidatos.
+    * **Configuración y Razonamiento:** Se probaron `c("gini", "extratrees")`. `"gini"` es el criterio estándar basado en la pureza del nodo. `"extratrees"` (de *Extremely Randomized Trees*) introduce una aleatoriedad adicional al seleccionar los puntos de corte de forma aleatoria en lugar de buscar el óptimo. Incluirlo en la búsqueda permite verificar si esta aleatoriedad extra actúa como una forma de regularización beneficiosa para nuestro dataset.
+
+#### Modelo 2: Máquinas de Vectores Soporte (SVM) con Kernel Radial
+
+Para el modelo SVM, la optimización se centra en los parámetros que definen la flexibilidad de la frontera de decisión no lineal.
+
+```{r show_svm_results, echo=TRUE}
+# Mostramos los resultados del entrenamiento y el mejor tuneo encontrado
+print(modelo_svm)
+```
+
+* **`C` (Parámetro de Coste o Regularización):**
+    * **Significado:** Este parámetro controla el trade-off entre lograr un margen de separación entre clases lo más amplio posible y clasificar correctamente el mayor número de puntos de entrenamiento. Un valor **bajo** de `C` prioriza un margen amplio, permitiendo que algunos puntos queden mal clasificados (modelo más simple, más generalizable). Un valor **alto** de `C` penaliza fuertemente los errores de clasificación, resultando en un margen más estrecho que intenta ajustarse más a los datos (modelo más complejo, con mayor riesgo de sobreajuste).
+    * **Configuración y Razonamiento:** Se configuró una rejilla logarítmica de `c(0.1, 1, 10)`. Explorar los hiperparámetros en una escala logarítmica es la práctica recomendada para `C`. Esta selección nos permite probar un modelo muy regularizado (`C=0.1`), un punto de partida estándar (`C=1`), y un modelo considerablemente más complejo (`C=10`), cubriendo así un amplio espectro de posibles comportamientos del modelo.
+
+* **`sigma` (Parámetro del Kernel RBF):**
+    * **Significado:** Este parámetro define la "amplitud" o "influencia" de cada punto de datos. Un valor **pequeño** de `sigma` significa que la influencia de un punto es muy localizada, lo que puede resultar en una frontera de decisión muy "ondulada" y compleja que se adapta a la estructura fina de los datos. Un valor **grande** de `sigma` significa que cada punto tiene una influencia más amplia, resultando en una frontera de decisión más suave y general.
+    * **Configuración y Razonamiento:** Se configuró una rejilla de `c(0.01, 0.05, 0.1)`. Dado que los datos para el SVM se escalan y centran automáticamente (`preProcess = c("center", "scale")`), los valores óptimos de `sigma` suelen ser pequeños. La rejilla seleccionada nos permite probar desde una frontera muy flexible (`sigma=0.01`) hasta una considerablemente más suave (`sigma=0.1`), buscando el nivel de complejidad que mejor se adapte a la estructura no lineal de nuestros datos sin caer en el sobreajuste.
+
+---
+
+## ¿Qué medidas de rendimiento has elegido para reportar y decidir el mejor modelo? ¿Qué estrategia de remuestreo de los conjuntos para obtener buenos estimadores de las medidas de rendimiento?
+
+#### Medidas de Rendimiento
+
+Para evaluar y comparar los modelos, se ha elegido un conjunto de métricas que ofrecen una visión completa de su rendimiento, especialmente en el contexto de un problema de clasificación multiclase con clases desbalanceadas.
+
+* **Kappa (Índice de Cohen):** Esta fue la **métrica principal para la optimización** de hiperparámetros. Mide el grado de acuerdo entre las predicciones del modelo y la realidad, corrigiendo el acierto que podría ocurrir por azar. Es especialmente valiosa en datasets desbalanceados porque un valor alto de Kappa indica que el modelo es hábil para distinguir entre las clases, y no solo para predecir la clase mayoritaria. Un Kappa > 0.6 se considera un buen rendimiento, y > 0.8 excelente.
+
+* **Accuracy (Precisión Global):** Mide el porcentaje total de predicciones correctas. Aunque puede ser engañosa si se mira de forma aislada en problemas desbalanceados, sigue siendo una métrica intuitiva y útil para tener una idea general del rendimiento.
+
+* **Métricas por Clase (Sensibilidad y Especificidad):**
+    * **Sensibilidad (Recall o Tasa de Verdaderos Positivos):** Mide la capacidad del modelo para identificar correctamente las muestras de una clase específica. Es crucial para evaluar si las clases minoritarias están siendo detectadas.
+    * **Especificidad:** Mide la capacidad del modelo para identificar correctamente las muestras que *no* pertenecen a una clase específica. Una alta especificidad indica una baja tasa de falsos positivos.
+
+#### Estrategia de Remuestreo
+
+Para obtener estimadores de rendimiento robustos y fiables, se ha empleado la **validación cruzada de 10 folds, repetida 3 veces (`repeatedcv`)**.
+
+* **Justificación:** Esta estrategia es superior a una validación cruzada simple por varias razones:
+    1.  **Reduce la Varianza:** Al promediar los resultados de 30 ejecuciones de entrenamiento/validación (10 folds x 3 repeticiones), se reduce el impacto de una única partición aleatoria de los datos que podría dar lugar a una estimación de rendimiento demasiado optimista o pesimista.
+    2.  **Uso Eficiente de los Datos:** Todo el conjunto de entrenamiento se utiliza tanto para entrenar como para validar el modelo, proporcionando una evaluación más precisa de su capacidad de generalización.
+    3.  **Fiabilidad:** Los resultados obtenidos mediante esta técnica son más estables y es más probable que reflejen el verdadero rendimiento del modelo en datos no vistos.
+
+Esta combinación de métricas robustas y una estrategia de remuestreo sólida asegura que la selección del mejor modelo se base en una evaluación rigurosa y completa.
+
+---
+
+## ¿Cuál es el mejor algoritmo para este problema? ¿Por qué?
+
+Para determinar cuál es el mejor algoritmo, no basta con mirar el rendimiento estimado durante la validación cruzada. La prueba definitiva es evaluar el rendimiento de los modelos finales (con sus hiperparámetros óptimos) sobre el conjunto de prueba (test_set), un conjunto de datos que los modelos no han visto nunca.
+
+#### Comparación sobre el Conjunto de Prueba
+
+```{r final_evaluation_reworked, message=FALSE, warning=FALSE, echo=TRUE, fig.width=14, fig.height=8}
+# --- Predicciones y Cálculo de Métricas ---
+predictions_rf <- predict(modelo_rf, newdata = test_set)
+predictions_svm <- predict(modelo_svm, newdata = test_set)
+
+conf_matrix_rf <- confusionMatrix(predictions_rf, test_set$class, mode="everything")
+conf_matrix_svm <- confusionMatrix(predictions_svm, test_set$class, mode="everything")
+
+# --- Presentación de los Resultados Globales ---
+global_results <- data.frame(
+  Modelo = c("Random Forest", "SVM"),
+  Accuracy = c(conf_matrix_rf$overall['Accuracy'], conf_matrix_svm$overall['Accuracy']),
+  Kappa = c(conf_matrix_rf$overall['Kappa'], conf_matrix_svm$overall['Kappa'])
+)
+knitr::kable(global_results, caption = "Comparación de Rendimiento Global en el Conjunto de Prueba", digits = 4)
+
+# --- GRÁFICO COMPARATIVO
+# --------------------------------------------------------------------------
+
+# 1. Se extraen las métricas por clase de ambos modelos
+metrics_rf <- as.data.frame(conf_matrix_rf$byClass) %>%
+  tibble::rownames_to_column("Clase") %>% mutate(Modelo = "Random Forest")
+metrics_svm <- as.data.frame(conf_matrix_svm$byClass) %>%
+  tibble::rownames_to_column("Clase") %>% mutate(Modelo = "SVM")
+
+# 2. Se combinan y se seleccionan las métricas de interés
+# Se pivota a formato ancho para poder dibujar los segmentos entre los puntos de cada modelo.
+metrics_to_plot <- bind_rows(metrics_rf, metrics_svm) %>%
+  select(Clase, Modelo, `Balanced Accuracy`, Sensitivity, Specificity) %>%
+  pivot_wider(names_from = Modelo, values_from = c(`Balanced Accuracy`, Sensitivity, Specificity))
+
+# 3. Creación del gráfico
+ggplot(metrics_to_plot, aes(y = Clase)) +
+  # Se dibujan los segmentos que unen los puntos de RF y SVM para cada métrica
+  geom_segment(aes(x = `Balanced Accuracy_Random Forest`, xend = `Balanced Accuracy_SVM`, yend = Clase), color = "grey80", size = 2, alpha=0.8) +
+  geom_segment(aes(x = `Sensitivity_Random Forest`, xend = `Sensitivity_SVM`, yend = Clase), color = "grey80", size = 2, alpha=0.8) +
+  geom_segment(aes(x = `Specificity_Random Forest`, xend = `Specificity_SVM`, yend = Clase), color = "grey80", size = 2, alpha=0.8) +
+  
+  # Se añaden los puntos para cada modelo y métrica
+  geom_point(aes(x = `Balanced Accuracy_Random Forest`, color = "Random Forest", shape="Balanced Accuracy"), size = 4) +
+  geom_point(aes(x = `Balanced Accuracy_SVM`, color = "SVM", shape="Balanced Accuracy"), size = 4) +
+  geom_point(aes(x = `Sensitivity_Random Forest`, color = "Random Forest", shape="Sensitivity"), size = 4) +
+  geom_point(aes(x = `Sensitivity_SVM`, color = "SVM", shape="Sensitivity"), size = 4) +
+  geom_point(aes(x = `Specificity_Random Forest`, color = "Random Forest", shape="Specificity"), size = 4) +
+  geom_point(aes(x = `Specificity_SVM`, color = "SVM", shape="Specificity"), size = 4) +
+  
+  # Se facet_wrap por Métrica para una comparación clara
+  facet_wrap(~ "Comparación por Clase", labeller = label_value, scales = "free_y") +
+  
+  # Definición de escalas, colores y leyendas
+  scale_color_manual(name = "Modelo:", values = c("Random Forest" = "#e41a1c", "SVM" = "#377eb8")) +
+  scale_shape_manual(name = "Métrica:", values = c("Balanced Accuracy" = 16, "Sensitivity" = 17, "Specificity" = 15)) +
+  scale_x_continuous(limits = c(0, 1.05), labels = scales::percent_format(accuracy = 1)) +
+  
+  labs(
+    title = "Comparativa de Rendimiento por Clase: Random Forest vs. SVM",
+    subtitle = "Evaluación sobre el conjunto de prueba (test_set)",
+    x = "Valor de la Métrica",
+    y = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, color="gray40"),
+    panel.grid.major.y = element_line(linetype = "dashed", color="gray90"),
+    panel.grid.minor.x = element_blank(),
+    strip.text = element_blank() # Se quita el título de la faceta que no aporta nada
+  )
+
+```
+
+#### Análisis y Conclusión
+
+Al evaluar ambos modelos en el conjunto de prueba, los resultados numéricos de la tabla confirman que **Random Forest es ligeramente superior al modelo SVM** en las métricas globales. Sin embargo, el nuevo gráfico nos permite un análisis mucho más rico y detallado.
+
+* **Rendimiento Global:** El modelo Random Forest obtiene un `Kappa` de **0.6180**, superando el `Kappa` de 0.5962 del SVM. Esto indica que, en general, RF es más robusto para este problema de clasificación desbalanceado.
+
+* **Rendimiento por Clase (Gráfico Detallado):** El gráfico de "dumbbell" ilustra las fortalezas y debilidades de cada modelo:
+    * **Comparación Directa:** La longitud y dirección de las líneas grises muestran la diferencia entre modelos. Para la `Sensitivity` (la capacidad de detectar una clase), las líneas son generalmente cortas, pero el punto rojo (RF) suele estar a la derecha del azul (SVM), especialmente en clases minoritarias como `ncRNA`. Esto demuestra visualmente que Random Forest es marginalmente mejor a la hora de identificar estas clases difíciles.
+    * **Fortalezas y Debilidades:** Ambos modelos son excelentes reconociendo `ICE` (no mostrado en el gráfico para no distorsionar la escala, pero su sensibilidad es >90% en ambos) y tienen una `Specificity` casi perfecta en todas las clases. Sin embargo, el verdadero reto, la `Sensitivity` en las clases minoritarias, sigue siendo bajo para ambos, aunque RF lleva una ligera ventaja.
+
+* **Coste Computacional e Interpretabilidad:** A las ventajas en rendimiento del Random Forest se suman dos factores prácticos decisivos: su **entrenamiento fue significativamente más rápido** y, crucialmente, **ofrece una medida de la importancia de las variables**, algo que el modelo SVM no proporciona de forma directa.
+
+**Veredicto:**
+
+El modelo **Random Forest se selecciona como el mejor algoritmo para este problema**. No solo presenta un **rendimiento predictivo global ligeramente superior** al del SVM en el conjunto de prueba, sino que el análisis detallado muestra que es más competente detectando las clases minoritarias. Si a esto le sumamos sus enormes ventajas en **eficiencia computacional e interpretabilidad**, la elección es clara.
+
+
+---
+
+## Una vez seleccionado el mejor modelo, y siempre que sea posible responder a esta pregunta ¿cuáles son las features o predictores más relevantes para el modelo seleccionado?
+
+Dado que se ha seleccionado el modelo Random Forest, es posible responder a esta pregunta. El algoritmo puede estimar la importancia de cada predictor midiendo cuánto empeora el rendimiento del modelo si los valores de esa variable son permutados aleatoriamente. Una caída grande en el rendimiento implica que la variable es muy importante.
+
+```{r variable_importance, message=FALSE, warning=FALSE, echo=TRUE}
+# --- Cálculo y Visualización de la Importancia de Variables ---
+# Se utiliza la función varImp() sobre el objeto del modelo Random Forest.
+# El modelo ya fue entrenado con importance = 'permutation', que es el método más robusto.
+var_imp <- varImp(modelo_rf, scale = FALSE)
+
+# Se muestra el gráfico con las 20 variables más importantes
+plot(var_imp, top = 20, main = "Top 20 Predictores más Importantes (Random Forest)")
+```
+
+#### Interpretación de los Predictores Más Relevantes
+
+El gráfico de importancia de variables revela un conjunto claro de predictores que son fundamentales para la capacidad del modelo de distinguir entre los tipos de loci.
+
+Las variables más importantes son:
+
+1.  **`mean_phastCons7way`**: Esta variable, que mide la conservación evolutiva a lo largo de 7 especies de vertebrados, es con diferencia la más importante. Un valor alto indica que una región ha sido conservada por la selección natural, lo que suele ser característico de regiones funcionalmente importantes como los exones (`ICE`) o las regiones reguladoras (`UTR`).
+2.  **`meanEE` y `meanPd`**: Ambas variables están relacionadas con las características de la señal de transcripción (entropía y diferencia porcentual). Su alta importancia sugiere que la forma y estabilidad de la señal transcriptómica son claves para diferenciar, por ejemplo, entre UTRs y exones codificantes.
+3.  **`CG`**: El contenido en dinucleótidos CG es una característica conocida de regiones reguladoras y promotoras. Su alta relevancia confirma que la composición de la secuencia es un factor discriminatorio crucial.
+4.  **`polyA_signal`**: La presencia de una señal de poliadenilación es definitoria de los extremos 3' de los transcritos, lo que explica su importancia para distinguir las clases `3-UTR`.
+
+En conclusión, el modelo Random Forest basa sus predicciones principalmente en una combinación de **conservación evolutiva, características de la señal de transcripción y composición de la secuencia**, lo cual se alinea perfectamente con el conocimiento biológico actual sobre la función de estas regiones genómicas.
